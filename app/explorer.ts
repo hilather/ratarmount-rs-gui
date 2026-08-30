@@ -1054,6 +1054,11 @@ export class ExplorerController {
 
   private onJobSucceeded(event: { jobId: number; sessionId?: SessionId | null }): void {
     if (this.extractInFlight || this.extractJobId === event.jobId) {
+      const status = this.snapshot.extractJob?.status
+      if (status === 'cancelled' || status === 'failed') {
+        this.extractInFlight = false
+        return
+      }
       this.extractJobId = event.jobId
       this.extractInFlight = false
       const current = this.snapshot.extractJob
@@ -1149,6 +1154,10 @@ export class ExplorerController {
     bytesOut: number
     current?: string | null
   }): void {
+    const status = this.snapshot.extractJob?.status
+    if (status === 'cancelled' || status === 'failed' || status === 'succeeded') {
+      return
+    }
     if (!this.extractInFlight && this.extractJobId !== event.jobId) {
       return
     }

@@ -338,6 +338,13 @@ impl NativeApp {
         bytes_out: i64,
         current: String,
     ) {
+        if self
+            .jobs
+            .get(&job_id)
+            .is_none_or(|job| job.status != JobStatus::Running)
+        {
+            return;
+        }
         self.emit(Event::ExtractProgress {
             job_id,
             files_done,

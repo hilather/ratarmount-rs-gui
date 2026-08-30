@@ -618,6 +618,15 @@ test('progress cancel fires view handler', async () => {
   const progress = renderView(controller.getSnapshot(), explorerHandlers(controller))
   clickByTestId(progress, 'progress-cancel')
   await waitFor(controller, (s) => s.extractJob?.status === 'cancelled')
+  const jobId = controller.getSnapshot().extractJob?.jobId ?? 0
+  fake.emitExtractProgress({
+    jobId,
+    filesDone: 2,
+    filesHint: 10,
+    bytesOut: 99,
+    current: '/dir-00',
+  })
+  expect(controller.getSnapshot().extractJob?.status).toBe('cancelled')
 })
 
 test('jobFailed.retryable shows Retry on the progress panel', async () => {

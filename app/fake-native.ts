@@ -41,6 +41,7 @@ export type FakeNative = NativeAddon & {
   extractMode: 'ok' | 'hold' | 'busy' | 'path-escape'
   completeExtract(jobId: number): void
   failExtract(jobId: number, code: string, message: string, retryable: boolean): void
+  emitExtractProgress(event: ExtractProgressEvent): void
 }
 
 export function createFakeNative(
@@ -103,6 +104,11 @@ export function createFakeNative(
       heldJobs.delete(jobId)
       for (const cb of failed) {
         cb({ jobId, code, message, retryable })
+      }
+    },
+    emitExtractProgress(event: ExtractProgressEvent) {
+      for (const cb of extractProgress) {
+        cb(event)
       }
     },
     async pickFile() {

@@ -196,6 +196,14 @@ fn extract_hold_then_cancel() {
         events.last(),
         Some(Event::JobCancelled { job_id: id }) if *id == job_id
     ));
+    app.emit_extract_progress(job_id, 2, 10, 99, "/dir-00/a.txt".into());
+    let late = app.take_events();
+    assert!(
+        !late
+            .iter()
+            .any(|e| matches!(e, Event::ExtractProgress { job_id: id, .. } if *id == job_id)),
+        "cancelled jobs must not emit extractProgress"
+    );
 }
 
 #[test]
