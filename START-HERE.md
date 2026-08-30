@@ -2,7 +2,7 @@
 
 You are in **ratarmount-rs-gui**, a native GPUIX desktop archive explorer for [ratarmount-rs](https://github.com/hilather/ratarmount-rs).
 
-Status: **documentation seed**. Application code (`app/`, `native/`) is wave **W0** and has not started.
+Status: **W0 hello window**. `cd app && bun install && bun run dev` opens a 1100×720 window titled “ratarmount”. The `native/` crate is an unwired stub (`cargo test -p native`).
 
 ## Read in this order
 

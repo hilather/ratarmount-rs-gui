@@ -5,6 +5,7 @@ app/dist/
 dist/
 .bun/
 *.tsbuildinfo
+screenshots/
 
 # Rust
 target/

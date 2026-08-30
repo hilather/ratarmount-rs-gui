@@ -9,7 +9,7 @@ This repository is a native GPUIX desktop explorer for [ratarmount-rs](https://g
 3. Read the current wave file under [docs/implementation/waves/](docs/implementation/waves/).
 4. If the change is architectural, read [docs/design/design.md](docs/design/design.md) and any relevant ADR.
 
-Status today: **documentation seed**. Do not start `app/` / `native/` work except as wave W0.
+Status today: **W0 hello window**. Native crate is an unwired stub; napi wiring is the next wave.
 
 ## Tests
 
@@ -28,13 +28,11 @@ Stale docs are a defect. Update living docs in the **same change** as the code (
 
 CI is mandatory. Do not skip or weaken tests to go green.
 
-When `native/` and `app/` exist:
-
 ```bash
 cargo fmt --all
 cargo clippy -p native --all-targets -- -D warnings
 cargo test -p native
-# bun test   (app/)
+(cd app && bun test)
 ```
 
 ## Review

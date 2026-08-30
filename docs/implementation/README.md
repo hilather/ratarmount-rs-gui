@@ -6,6 +6,6 @@ How this repository is built in waves of subagents. Engine work (G0–G7) lives 
 |-----|--------|
 | [plan.md](plan.md) | **First-class** orchestrator plan: wave table, spawn prompts, fake-session strategy, `/execute-plan` mapping |
 | [06-agent-waves.md](06-agent-waves.md) | Wave index + ownership + agent rules |
-| [waves/W0.md](waves/W0.md) … [W8.md](waves/W8.md) | Per-wave checklists (unchecked until the wave lands) |
+| [waves/W0.md](waves/W0.md) … [W8.md](waves/W8.md) | Per-wave checklists (tick when the wave lands) |
 
 Architecture must be read before code: [../architecture/](../architecture/). Acceptance: [../design/07-acceptance.md](../design/07-acceptance.md).
