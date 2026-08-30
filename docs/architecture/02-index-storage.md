@@ -81,6 +81,8 @@ Verified in `ratarmount-index/src/location.rs`. Last resort is **`:memory:`**, n
 
 `local-index-v1/` does **not** exist yet. If W2 writes sha256 keys there before G4, the CLI will not find them.
 
+W2 (2026-08-29) does **not** call `resolve_index_location` yet (`ratarmount-session` / G4 are missing). Native logs `rgui: resolved index path: (unresolved; TODO(engine) resolve_index / resolve_index_location) …` and does not invent sidecar names.
+
 ### Post-G4 target (engine `resolve_index`; GUI consumes it, does not reimplement)
 
 1. `explicit` path if policy is explicit

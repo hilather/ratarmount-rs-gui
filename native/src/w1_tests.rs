@@ -617,6 +617,7 @@ fn regression_no_read_all_command() {
         include_str!("napi_api.rs"),
         include_str!("commands.rs"),
         include_str!("types.rs"),
+        include_str!("session.rs"),
     ];
     for src in sources {
         for line in src.lines() {

@@ -103,3 +103,5 @@ If the CLI binary is absent, hide those actions.
 ## Test seams
 
 Native crate exposes the same commands to a headless harness (`native --self-test`) so waves can land without GPUIX. UI tests use GPUIX automation (`getByTestId`) against fixtures, never against a 40 GiB archive in CI.
+
+Until engine G0.2 + G1 + G2 land, `native` does **not** pin `ratarmount-session`. Feature `session` is reserved (empty allowlist; never fuse/nfs/smb/http). `RGUI_FAKE=1` / `NativeApp::for_test()` still serve the in-memory catalog. Production `open` without fake hits the G0 adapter in `native/src/session.rs` and returns `TODO(engine)` (`Internal`) rather than inventing a sidecar format.

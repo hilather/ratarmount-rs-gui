@@ -19,13 +19,7 @@ pub fn parse_policy(value: &str) -> Result<IndexPolicy> {
 
 #[cfg(any(test, feature = "napi-addon"))]
 pub fn policy_str(policy: IndexPolicy) -> &'static str {
-    match policy {
-        IndexPolicy::Sibling => "sibling",
-        IndexPolicy::UserCache => "user-cache",
-        IndexPolicy::Explicit => "explicit",
-        IndexPolicy::Temp => "temp",
-        IndexPolicy::Memory => "memory",
-    }
+    policy.as_str()
 }
 
 #[cfg(any(test, feature = "napi-addon"))]

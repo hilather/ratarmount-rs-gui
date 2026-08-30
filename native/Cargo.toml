@@ -17,11 +17,19 @@ default = []
 # Compiles the napi-rs addon. Required for `napi build`; not needed for
 # `cargo test -p native` or `native --self-test` (those use the rlib API).
 napi-addon = ["dep:napi", "dep:napi-derive", "dep:rfd"]
+# Real `ratarmount-session` path (engine G0.2 + G1 + G2 + G5.1/G5.3).
+# Off until that crate exists; `cargo test -p native --features session`
+# must fail until `Session::open` is actually linked.
+# When pinning: default-features = false. Allowlist: none. Never fuse/nfs/smb/http.
+# Do not import the `ratarmount` binary crate.
+session = []
 
 [dependencies]
 napi = { version = "=3.12.2", default-features = false, features = ["napi4", "dyn-symbols"], optional = true }
 napi-derive = { version = "=3.6.3", optional = true }
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"], optional = true }
+# TODO(engine): pin `ratarmount-session` from the engine git tag (G0.2).
+# ratarmount-session = { git = "https://github.com/hilather/ratarmount-rs", tag = "vX.Y.Z", default-features = false, optional = true }
 
 [build-dependencies]
 napi-build = "=2.4.1"

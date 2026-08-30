@@ -90,6 +90,12 @@ CI of this repository either:
 - path-dep on a submodule / sibling checkout, or
 - crates.io / git tag dep plus download of the CLI asset.
 
+### Native crate pin (W2)
+
+**Not pinned (2026-08-29).** Sibling engine `0.1.29` has no `ratarmount-session` crate and no `ratarmount-core::session`. `native/Cargo.toml` has a reserved `session` feature (`session = []`) and a commented git-tag sketch with `default-features = false`. Allowlist: none. Never enable `fuse` / `nfs` / `smb` / `http`. Do **not** import the `ratarmount` binary crate to reach `factory.rs`.
+
+When G0.2 lands, pin the chosen crate from the matching engine git tag (same `X.Y.Z` as the bundled CLI) and flip `session = ["dep:ratarmount-session"]` (or `ratarmount-core` with a `session` feature).
+
 ## Auto-update
 
 v1: none. GitHub Releases.  

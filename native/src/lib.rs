@@ -8,6 +8,7 @@ mod events;
 mod napi_api;
 mod parse;
 mod paths;
+mod session;
 mod state;
 mod types;
 
@@ -21,4 +22,8 @@ pub use types::{
 };
 
 #[cfg(test)]
+mod ustar_fixture;
+#[cfg(test)]
 mod w1_tests;
+#[cfg(test)]
+mod w2_tests;
