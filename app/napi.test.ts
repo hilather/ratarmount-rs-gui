@@ -3,6 +3,7 @@ import { expect, test } from 'bun:test'
 import {
   CommandError,
   normalizeDirPage,
+  normalizeExtractPlan,
   normalizeOpenResult,
   wrapNativeModule,
 } from './napi'
@@ -47,10 +48,19 @@ test('wrapNativeModule exposes pickFile/open/list/close/on', async () => {
   let listN = 0
   const addon = wrapNativeModule({
     pickFile: () => '/tmp/hello.tar',
+    pickDir: () => '/tmp/out',
     open: () => ({ sessionId: 1, jobId: null }),
     close: () => {},
     list: () => listPages[listN++] ?? listPages[1],
     lookup: () => null,
+    preview: () => ({ kind: 'skipped', reason: 'unknown' }),
+    extractPlan: () => ({ files: 0, bytes: 0, conflictCount: 0, conflicts: [], conflictsTruncated: false }),
+    extract: () => ({ jobId: 1 }),
+    cancel: () => {},
+    getConfig: () => ({
+      extract: { overwrite: 'ask', allowUnsafePaths: false },
+      preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
+    }),
     on: () => {},
   })
   expect(await addon.pickFile()).toBe('/tmp/hello.tar')
@@ -68,6 +78,7 @@ test('wrapNativeModule maps command errors onto CommandError', async () => {
     pickFile: () => {
       throw Object.assign(new Error('dialog failed'), { code: 'Internal', retryable: false })
     },
+    pickDir: () => null,
     open: () => {
       throw Object.assign(new Error('unknown archive'), { code: 'NotFound', retryable: false })
     },
@@ -76,6 +87,14 @@ test('wrapNativeModule maps command errors onto CommandError', async () => {
       throw new Error('boom')
     },
     lookup: () => null,
+    preview: () => ({ kind: 'skipped', reason: 'unknown' }),
+    extractPlan: () => ({ files: 0, bytes: 0, conflictCount: 0, conflicts: [], conflictsTruncated: false }),
+    extract: () => ({ jobId: 1 }),
+    cancel: () => {},
+    getConfig: () => ({
+      extract: { overwrite: 'ask', allowUnsafePaths: false },
+      preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
+    }),
     on: () => {
       throw new Error('bad event')
     },
@@ -103,4 +122,52 @@ test('wrapNativeModule maps command errors onto CommandError', async () => {
     expect((err as CommandError).message).toBe('dialog failed')
   }
   expect(() => addon.on('jobSucceeded', () => {})).toThrow(CommandError)
+})
+
+test('wrapNativeModule extract rejects overwrite ask before native', async () => {
+  const addon = wrapNativeModule({
+    pickFile: () => null,
+    pickDir: () => '/tmp/out',
+    open: () => ({ sessionId: 1 }),
+    close: () => {},
+    list: () => ({ path: '/', entries: [], nextCursor: null, totalHint: 0 }),
+    lookup: () => null,
+    preview: () => ({ kind: 'skipped', reason: 'unknown' }),
+    extractPlan: () => ({ files: 0, bytes: 0, conflictCount: 0, conflicts: [], conflictsTruncated: false }),
+    extract: () => {
+      throw new Error('native extract must not be called with ask')
+    },
+    cancel: () => {},
+    getConfig: () => ({
+      extract: { overwrite: 'ask', allowUnsafePaths: false },
+      preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
+    }),
+    on: () => {},
+  })
+  try {
+    await addon.extract({
+      sessionId: 1,
+      members: [],
+      destDir: '/tmp/out',
+      overwrite: 'ask' as unknown as 'skip',
+    })
+    throw new Error('expected extract to throw')
+  } catch (err) {
+    expect(err).toBeInstanceOf(CommandError)
+    expect((err as CommandError).code).toBe('Internal')
+    expect((err as CommandError).retryable).toBe(false)
+  }
+})
+
+test('normalizeExtractPlan caps conflicts at 50', () => {
+  const plan = normalizeExtractPlan({
+    files: 1000,
+    bytes: 1,
+    conflict_count: 1000,
+    conflicts: Array.from({ length: 80 }, (_, i) => ({ member: `/m${i}`, dest_path: `/d/m${i}` })),
+    conflicts_truncated: true,
+  })
+  expect(plan.conflicts.length).toBeLessThanOrEqual(50)
+  expect(plan.conflictsTruncated).toBe(true)
+  expect(plan.conflictCount).toBe(1000)
 })

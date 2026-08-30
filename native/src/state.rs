@@ -141,15 +141,17 @@ impl NativeApp {
     }
 
     pub(crate) fn alloc_session(&mut self, source: String) -> u32 {
+        self.alloc_session_with_catalog(source, FakeCatalog::new())
+    }
+
+    pub(crate) fn alloc_session_with_catalog(
+        &mut self,
+        source: String,
+        catalog: FakeCatalog,
+    ) -> u32 {
         let id = self.next_session_id;
         self.next_session_id = self.next_session_id.saturating_add(1);
-        self.sessions.insert(
-            id,
-            SessionState {
-                source,
-                catalog: FakeCatalog::new(),
-            },
-        );
+        self.sessions.insert(id, SessionState { source, catalog });
         id
     }
 

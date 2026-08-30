@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use crate::error::{ApiError, Result};
 
@@ -51,4 +51,38 @@ pub fn discard_secret(secret: Option<String>) {
         s.clear();
         drop(s);
     }
+}
+
+pub fn is_encrypted_source(source: &str) -> bool {
+    let norm = source.replace('\\', "/").to_ascii_lowercase();
+    norm.contains("encrypted")
+}
+
+/// Lexically join `member` under `dest_dir`. Rejects paths that leave `dest_dir`.
+pub fn member_dest_path(dest_dir: &Path, member: &str) -> Result<PathBuf> {
+    let rel = member.trim_start_matches('/');
+    if rel.is_empty() {
+        return Err(ApiError::path_escape("empty member dest"));
+    }
+    let joined = dest_dir.join(rel);
+    let dest = normalize_lex(&joined);
+    let base = normalize_lex(dest_dir);
+    if !dest.starts_with(&base) || dest == base {
+        return Err(ApiError::path_escape("extract path escapes destination"));
+    }
+    Ok(dest)
+}
+
+fn normalize_lex(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in path.components() {
+        match c {
+            Component::ParentDir => {
+                let _ = out.pop();
+            }
+            Component::CurDir => {}
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }

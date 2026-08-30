@@ -7,6 +7,8 @@ import {
   crumbsFor,
   crumbTestId,
   ExplorerController,
+  EXTRACT_CONFIRM_BYTES,
+  EXTRACT_CONFIRM_FILES,
   formatMtime,
   formatSize,
   LIST_LIMIT_DEFAULT,
@@ -17,19 +19,30 @@ import {
 } from './explorer'
 import {
   createFakeNative,
+  FAKE_ENCRYPTED_PASSWORD,
   FAKE_MTIME,
   FAKE_ROOT_FILE_COUNT,
   FAKE_ROOT_TOTAL,
+  NINE_MIB,
 } from './fake-native'
 import { clickByTestId, collectTestIds, getByTestId, keyDownByTestId, queryByTestId } from './gpuix-test'
 
 const noop: ExplorerHandlers = {
   onOpen() {},
   onClose() {},
+  onExtract() {},
   onCrumb() {},
   onRowClick() {},
   onKey() {},
   onVisibleRange() {},
+  onCancelExtract() {},
+  onRetryExtract() {},
+  onConfirmExtract() {},
+  onOverwriteSkip() {},
+  onOverwriteReplace() {},
+  onDismissDialog() {},
+  onPasswordSubmit() {},
+  onExtractOpenSystem() {},
 }
 
 function renderView(model: ExplorerSnapshot, handlers: Partial<ExplorerHandlers> = {}) {
@@ -275,16 +288,17 @@ test('double-clicking a directory row enters it', async () => {
   )
 })
 
-test('W3 source does not call extract, preview, find, or readAll', async () => {
+test('W4 source does not call readAll and does not pass overwrite ask', async () => {
   const files = ['explorer.ts', 'explorer-view.tsx', 'app.tsx', 'napi.ts', 'native-addon.ts']
   for (const file of files) {
     const source = await Bun.file(new URL(`./${file}`, import.meta.url)).text()
     expect(source).not.toMatch(/\breadAll\s*\(/)
-    expect(source).not.toMatch(/\bextract\s*\(/)
-    expect(source).not.toMatch(/\bextractPlan\s*\(/)
-    expect(source).not.toMatch(/\bpreview\s*\(/)
-    expect(source).not.toMatch(/\bfind\s*\(/)
+    expect(source).not.toMatch(/overwrite:\s*['"]ask['"]/)
   }
+  const explorer = await Bun.file(new URL('./explorer.ts', import.meta.url)).text()
+  expect(explorer).toMatch(/\bextractPlan\s*\(/)
+  expect(explorer).toMatch(/\bpreview\s*\(/)
+  expect(explorer).not.toMatch(/\bnative\.find\s*\(/)
 })
 
 test('ExplorerView is a GPUIX host tree (virtual-list + testIds)', async () => {
@@ -295,9 +309,9 @@ test('ExplorerView is a GPUIX host tree (virtual-list + testIds)', async () => {
   expect(ids).toContain('open')
   expect(ids).toContain('list')
   expect(ids).toContain('crumb-root')
+  expect(ids).toContain('extract')
+  expect(ids).toContain('preview')
   expect(ids).not.toContain('search')
-  expect(ids).not.toContain('preview')
-  expect(ids).not.toContain('extract')
 })
 
 test('getByTestId chrome controls fire ExplorerView handlers', async () => {
@@ -426,3 +440,208 @@ test('App wires explorerHandlers onto the injected native', async () => {
   expect(source).toContain('setNativeLoader')
   expect(source).toContain('native?: NativeAddon')
 })
+
+test('ctrl-click multi-selects rows without entering a directory', async () => {
+  const { controller } = await openRoot()
+  controller.onRowClick(0, 1)
+  controller.onRowClick(1, 1, { ctrl: true })
+  const snap = controller.getSnapshot()
+  expect(snap.selectedPaths).toEqual(['/dir-00', '/dir-01'])
+  expect(snap.path).toBe('/')
+})
+
+test('Extract to uses pickDir, extractPlan, and skip|replace only', async () => {
+  const { fake, controller } = await openRoot()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'extract')
+  await waitFor(controller, (s) => s.extractJob?.status === 'succeeded')
+  expect(fake.extractPlanCalls).toHaveLength(1)
+  expect(fake.extractCalls).toHaveLength(1)
+  expect(fake.extractCalls[0]?.overwrite === 'skip' || fake.extractCalls[0]?.overwrite === 'replace').toBe(
+    true,
+  )
+  expect(fake.extractCalls[0]?.overwrite).not.toBe('ask')
+  expect(fake.extractCalls[0]?.destDir).toBe('/tmp/out')
+  const after = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(after, 'progress')).toBeTruthy()
+})
+
+test('extract-all confirm when extractPlan files exceed 1000', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    extractPlan: {
+      files: EXTRACT_CONFIRM_FILES + 1,
+      bytes: 10,
+      conflictCount: 0,
+      conflicts: [],
+      conflictsTruncated: false,
+    },
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'extract')
+  await waitFor(controller, (s) => s.dialog.kind === 'confirm-extract')
+  expect(fake.extractCalls).toHaveLength(0)
+  expect(controller.getSnapshot().entries.length).toBe(LIST_LIMIT_DEFAULT)
+  const dialog = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(dialog, 'confirm-extract')).toBeTruthy()
+  clickByTestId(dialog, 'confirm-extract-ok')
+  await waitFor(controller, (s) => s.extractJob?.status === 'succeeded')
+  expect(fake.extractCalls[0]?.overwrite).not.toBe('ask')
+})
+
+test('overwrite dialog uses the extractPlan sample, not 1k paths', async () => {
+  const sample = Array.from({ length: 50 }, (_, i) => ({
+    member: `/file-${String(i).padStart(4, '0')}.txt`,
+    destPath: `/tmp/out/file-${String(i).padStart(4, '0')}.txt`,
+  }))
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    extractPlan: {
+      files: 1000,
+      bytes: EXTRACT_CONFIRM_BYTES + 1,
+      conflictCount: 1000,
+      conflicts: sample,
+      conflictsTruncated: true,
+    },
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'extract')
+  await waitFor(controller, (s) => s.dialog.kind === 'confirm-extract')
+  const confirm = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(confirm, 'confirm-extract-ok')
+  await waitFor(controller, (s) => s.dialog.kind === 'overwrite')
+  const snap = controller.getSnapshot()
+  expect(snap.entries.length).toBe(LIST_LIMIT_DEFAULT)
+  expect(snap.entries.length).toBeLessThan(1000)
+  if (snap.dialog.kind !== 'overwrite') {
+    throw new Error('expected overwrite dialog')
+  }
+  expect(snap.dialog.conflicts.length).toBeLessThanOrEqual(50)
+  expect(snap.dialog.truncated).toBe(true)
+  expect(snap.dialog.conflictCount).toBe(1000)
+  const dialog = renderView(snap, explorerHandlers(controller))
+  expect(getByTestId(dialog, 'overwrite-dialog')).toBeTruthy()
+  expect(getByTestId(dialog, 'overwrite-more')).toBeTruthy()
+  clickByTestId(dialog, 'overwrite-skip')
+  await waitFor(controller, (s) => s.extractJob?.status === 'succeeded')
+  expect(fake.extractCalls[0]?.overwrite).toBe('skip')
+})
+
+test('preview pane shows text under 1 KiB', async () => {
+  const { controller } = await openRoot()
+  await controller.enterPath('/dir-00')
+  const a = controller.getSnapshot().entries.findIndex((e) => e.name === 'a.txt')
+  controller.onRowClick(a, 1)
+  await waitFor(controller, (s) => s.preview?.kind === 'text')
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(tree, 'preview')).toBeTruthy()
+  expect(getByTestId(tree, 'preview-text')).toBeTruthy()
+  const text = (getByTestId(tree, 'preview-text').props as { children?: string }).children
+  expect(text).toContain('hi!')
+})
+
+test('default 8 MiB preview cap skips a 9 MiB member', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    extraFiles: [{ parent: '/dir-00', name: 'huge.bin', size: NINE_MIB }],
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  await controller.enterPath('/dir-00')
+  const huge = controller.getSnapshot().entries.findIndex((e) => e.name === 'huge.bin')
+  expect(huge).toBeGreaterThanOrEqual(0)
+  controller.onRowClick(huge, 1)
+  await waitFor(controller, (s) => s.preview?.kind === 'skipped')
+  const preview = controller.getSnapshot().preview
+  expect(preview).toEqual({ kind: 'skipped', reason: 'too-large' })
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(tree, 'preview-skipped')).toBeTruthy()
+  expect(getByTestId(tree, 'extract-open-system')).toBeTruthy()
+})
+
+test('progress cancel fires view handler', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    extractMode: 'hold',
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'extract')
+  await waitFor(controller, (s) => s.extractJob?.status === 'running')
+  const progress = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(progress, 'progress-cancel')
+  await waitFor(controller, (s) => s.extractJob?.status === 'cancelled')
+})
+
+test('jobFailed.retryable shows Retry on the progress panel', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    extractMode: 'busy',
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'extract')
+  await waitFor(controller, (s) => s.extractJob?.status === 'failed' && s.extractJob.retryable)
+  const progress = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(progress, 'progress-retry')).toBeTruthy()
+})
+
+test('PathEscape is surfaced and extract is not written', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    extractMode: 'path-escape',
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'extract')
+  await waitFor(controller, (s) => s.dialog.kind === 'path-escape')
+  expect(fake.written.size).toBe(0)
+  const dialog = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(dialog, 'path-escape')).toBeTruthy()
+})
+
+test('password modal retries open without storing the secret on the snapshot', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/encrypted.tar',
+    openMode: 'bad-password',
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'open')
+  await waitFor(controller, (s) => s.dialog.kind === 'password')
+  const snap = controller.getSnapshot()
+  expect(JSON.stringify(snap)).not.toContain(FAKE_ENCRYPTED_PASSWORD)
+  const modal = renderView(snap, explorerHandlers(controller))
+  expect(getByTestId(modal, 'password-modal')).toBeTruthy()
+  clickByTestId(modal, 'password-submit', { value: FAKE_ENCRYPTED_PASSWORD })
+  await waitFor(controller, (s) => s.status === 'ready' && s.entries.length === LIST_LIMIT_DEFAULT)
+  expect(JSON.stringify(controller.getSnapshot())).not.toContain(FAKE_ENCRYPTED_PASSWORD)
+  expect(fake.openCalls[1]?.password).toBe(FAKE_ENCRYPTED_PASSWORD)
+})
+
+test('Extract is disabled until native is ready', () => {
+  const controller = new ExplorerController()
+  let extracted = false
+  const tree = renderView(controller.getSnapshot(), {
+    onExtract: () => {
+      extracted = true
+    },
+  })
+  clickByTestId(tree, 'extract')
+  expect(extracted).toBe(false)
+})
+

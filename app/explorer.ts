@@ -3,16 +3,55 @@ import {
   commandErrorFromUnknown,
   type Cursor,
   type DirEnt,
+  type ExtractConflict,
+  type ExtractPlan,
   type NativeAddon,
+  type NativeOverwrite,
   type OpenResult,
+  type PreviewResult,
   type SessionId,
 } from './napi'
 
 export const LIST_LIMIT_DEFAULT = 200
 export const LIST_LIMIT_MAX = 500
 export const LIST_NEAR_END = 24
+export const EXTRACT_CONFIRM_FILES = 1000
+export const EXTRACT_CONFIRM_BYTES = 1024 * 1024 * 1024
+export const EXTRACT_PLAN_CONFLICT_SAMPLE = 50
 
 export type ExplorerStatus = 'idle' | 'opening' | 'ready' | 'error'
+
+export type ClickMods = {
+  shift?: boolean
+  ctrl?: boolean
+  cmd?: boolean
+}
+
+export type ExtractJobView = {
+  jobId: number
+  filesDone: number
+  filesHint: number | null
+  bytesOut: number
+  current: string | null
+  status: 'running' | 'succeeded' | 'failed' | 'cancelled'
+  error: string | null
+  errorCode: string | null
+  retryable: boolean
+}
+
+export type ExplorerDialog =
+  | { kind: 'none' }
+  | { kind: 'confirm-extract'; destDir: string; members: string[]; files: number; bytes: number }
+  | {
+      kind: 'overwrite'
+      destDir: string
+      members: string[]
+      conflictCount: number
+      conflicts: ExtractConflict[]
+      truncated: boolean
+    }
+  | { kind: 'password' }
+  | { kind: 'path-escape'; message: string }
 
 export type Crumb = {
   testId: string
@@ -34,6 +73,11 @@ export type ExplorerSnapshot = {
   nextCursor: Cursor | null
   totalHint: number | null
   selectedIndex: number
+  selectedPaths: string[]
+  preview: PreviewResult | null
+  previewPath: string | null
+  extractJob: ExtractJobView | null
+  dialog: ExplorerDialog
 }
 
 const IDLE: ExplorerSnapshot = {
@@ -50,6 +94,11 @@ const IDLE: ExplorerSnapshot = {
   nextCursor: null,
   totalHint: null,
   selectedIndex: 0,
+  selectedPaths: [],
+  preview: null,
+  previewPath: null,
+  extractJob: null,
+  dialog: { kind: 'none' },
 }
 
 export function crumbTestId(path: string): string {
@@ -172,6 +221,14 @@ export class ExplorerController {
   private readonly finishedJobs = new Map<number, { sessionId?: SessionId; error?: CommandError }>()
   private listening = false
   private loadNative: (() => Promise<NativeAddon>) | null = null
+  private extractJobId: number | null = null
+  private extractInFlight = false
+  private selectAnchor = 0
+  private lastExtract: {
+    destDir: string
+    members: string[]
+    overwrite: NativeOverwrite
+  } | null = null
 
   constructor(options: ExplorerOptions = {}) {
     const limit = options.listLimit ?? LIST_LIMIT_DEFAULT
@@ -197,6 +254,8 @@ export class ExplorerController {
     if (!this.listening) {
       native.on('jobSucceeded', (event) => this.onJobSucceeded(event))
       native.on('jobFailed', (event) => this.onJobFailed(event))
+      native.on('jobCancelled', (event) => this.onJobCancelled(event))
+      native.on('extractProgress', (event) => this.onExtractProgress(event))
       this.listening = true
     }
     const clearLoadError =
@@ -250,7 +309,7 @@ export class ExplorerController {
     }
   }
 
-  async openSource(source: string): Promise<void> {
+  async openSource(source: string, password?: string): Promise<void> {
     const native = this.requireNative()
     if (!native) {
       return
@@ -266,9 +325,13 @@ export class ExplorerController {
       nextCursor: null,
       totalHint: null,
       selectedIndex: 0,
+      selectedPaths: [],
+      preview: null,
+      previewPath: null,
       path: '/',
       archivePath: source,
       indexPath: siblingIndexPath(source),
+      dialog: { kind: 'none' },
     })
     try {
       await this.closeSession()
@@ -279,6 +342,7 @@ export class ExplorerController {
         source,
         policy: 'sibling',
         recreate: 'if-invalid',
+        ...(password === undefined ? {} : { password }),
       })
       const sessionId = await this.sessionFromOpen(outcome)
       if (this.disposed || gen !== this.gen) {
@@ -291,8 +355,33 @@ export class ExplorerController {
         return
       }
       this.sessionId = null
+      const ce = commandErrorFromUnknown(err)
+      if (ce.code === 'BadPassword') {
+        this.patch({
+          status: 'error',
+          listing: false,
+          loadingMore: false,
+          error: ce.message,
+          errorRetryable: false,
+          dialog: { kind: 'password' },
+        })
+        return
+      }
       this.setError(err)
     }
+  }
+
+  async submitPassword(password: string): Promise<void> {
+    const source = this.snapshot.archivePath
+    this.patch({ dialog: { kind: 'none' } })
+    if (source == null) {
+      return
+    }
+    await this.openSource(source, password)
+  }
+
+  dismissDialog(): void {
+    this.patch({ dialog: { kind: 'none' } })
   }
 
   async closeArchive(): Promise<void> {
@@ -330,6 +419,9 @@ export class ExplorerController {
       entries: [],
       nextCursor: null,
       selectedIndex: 0,
+      selectedPaths: [],
+      preview: null,
+      previewPath: null,
       error: null,
     })
     try {
@@ -386,7 +478,13 @@ export class ExplorerController {
     }
   }
 
-  handleKey(key: string): void {
+  handleKey(key: string, mods: ClickMods = {}): void {
+    if (this.snapshot.dialog.kind !== 'none') {
+      if (key === 'escape') {
+        this.dismissDialog()
+      }
+      return
+    }
     if (this.snapshot.status !== 'ready') {
       return
     }
@@ -394,12 +492,16 @@ export class ExplorerController {
       case 'j':
       case 'down':
       case 'arrowdown':
-        this.moveSelection(1)
+        this.moveSelection(1, mods)
         break
       case 'k':
       case 'up':
       case 'arrowup':
-        this.moveSelection(-1)
+        this.moveSelection(-1, mods)
+        break
+      case ' ':
+      case 'space':
+        this.toggleSelection(this.snapshot.selectedIndex)
         break
       case 'enter':
         void this.activateSelection()
@@ -418,25 +520,74 @@ export class ExplorerController {
       return
     }
     const next = Math.max(0, Math.min(index, last))
-    if (next !== this.snapshot.selectedIndex) {
-      this.patch({ selectedIndex: next })
-    }
+    const path = this.snapshot.entries[next]?.path
+    this.selectAnchor = next
+    this.patch({
+      selectedIndex: next,
+      selectedPaths: path ? [path] : [],
+    })
+    this.queuePreview()
   }
 
-  onRowClick(index: number, clickCount: number): void {
-    this.selectIndex(index)
-    if (clickCount >= 2) {
+  onRowClick(index: number, clickCount: number, mods: ClickMods = {}): void {
+    const last = this.snapshot.entries.length - 1
+    if (last < 0) {
+      return
+    }
+    const next = Math.max(0, Math.min(index, last))
+    if (mods.shift) {
+      this.selectRange(this.selectAnchor, next)
+    } else if (mods.ctrl || mods.cmd) {
+      this.toggleSelection(next)
+    } else {
+      this.selectIndex(next)
+    }
+    if (clickCount >= 2 && !mods.ctrl && !mods.cmd && !mods.shift) {
       void this.activateSelection()
     }
   }
 
-  private moveSelection(delta: number): void {
+  private toggleSelection(index: number): void {
+    const ent = this.snapshot.entries[index]
+    if (!ent) {
+      return
+    }
+    const selected = new Set(this.snapshot.selectedPaths)
+    if (selected.has(ent.path)) {
+      selected.delete(ent.path)
+    } else {
+      selected.add(ent.path)
+    }
+    this.selectAnchor = index
+    this.patch({
+      selectedIndex: index,
+      selectedPaths: [...selected],
+    })
+    this.queuePreview()
+  }
+
+  private selectRange(from: number, to: number): void {
+    const start = Math.min(from, to)
+    const end = Math.max(from, to)
+    const paths = this.snapshot.entries.slice(start, end + 1).map((e) => e.path)
+    this.patch({
+      selectedIndex: to,
+      selectedPaths: paths,
+    })
+    this.queuePreview()
+  }
+
+  private moveSelection(delta: number, mods: ClickMods = {}): void {
     const last = this.snapshot.entries.length - 1
     if (last < 0) {
       return
     }
     const next = Math.max(0, Math.min(this.snapshot.selectedIndex + delta, last))
-    this.patch({ selectedIndex: next })
+    if (mods.shift) {
+      this.selectRange(this.selectAnchor, next)
+    } else {
+      this.selectIndex(next)
+    }
     if (delta > 0 && last - next <= this.nearEnd) {
       void this.loadMore()
     }
@@ -472,6 +623,10 @@ export class ExplorerController {
     const entries = opts.append
       ? [...this.snapshot.entries, ...page.entries]
       : page.entries
+    const selectedIndex = opts.append
+      ? Math.min(this.snapshot.selectedIndex, Math.max(0, entries.length - 1))
+      : 0
+    const selectedPaths = opts.append ? this.snapshot.selectedPaths : []
     this.patch({
       status: 'ready',
       listing: false,
@@ -482,10 +637,317 @@ export class ExplorerController {
       entries,
       nextCursor: page.nextCursor,
       totalHint: page.totalHint,
-      selectedIndex: opts.append
-        ? Math.min(this.snapshot.selectedIndex, Math.max(0, entries.length - 1))
-        : 0,
+      selectedIndex,
+      selectedPaths,
     })
+    if (!opts.append) {
+      this.selectAnchor = 0
+      this.queuePreview()
+    }
+  }
+
+  async extractTo(): Promise<void> {
+    if (this.snapshot.status === 'opening') {
+      return
+    }
+    if (!(await this.ensureNative())) {
+      return
+    }
+    const native = this.native
+    if (!native || this.sessionId == null || this.snapshot.archivePath == null) {
+      return
+    }
+    if (!this.snapshot.nativeReady) {
+      return
+    }
+    try {
+      const destDir = await native.pickDir()
+      if (destDir == null) {
+        return
+      }
+      await this.planAndExtract(destDir, this.selectedMembers())
+    } catch (err) {
+      this.handleExtractError(err)
+    }
+  }
+
+  async extractOpenWithSystem(): Promise<void> {
+    const path = this.snapshot.previewPath
+    if (path == null) {
+      return
+    }
+    if (!(await this.ensureNative())) {
+      return
+    }
+    const native = this.native
+    if (!native || this.sessionId == null) {
+      return
+    }
+    try {
+      const destDir = await native.pickDir()
+      if (destDir == null) {
+        return
+      }
+      await this.startExtract(destDir, [path], 'replace')
+    } catch (err) {
+      this.handleExtractError(err)
+    }
+  }
+
+  async confirmExtract(): Promise<void> {
+    const dialog = this.snapshot.dialog
+    if (dialog.kind !== 'confirm-extract') {
+      return
+    }
+    const { destDir, members } = dialog
+    this.patch({ dialog: { kind: 'none' } })
+    try {
+      const plan = await this.requirePlan(destDir, members)
+      await this.continueAfterPlan(destDir, members, plan)
+    } catch (err) {
+      this.handleExtractError(err)
+    }
+  }
+
+  async chooseOverwrite(overwrite: NativeOverwrite): Promise<void> {
+    const dialog = this.snapshot.dialog
+    if (dialog.kind !== 'overwrite') {
+      return
+    }
+    const { destDir, members } = dialog
+    this.patch({ dialog: { kind: 'none' } })
+    try {
+      await this.startExtract(destDir, members, overwrite)
+    } catch (err) {
+      this.handleExtractError(err)
+    }
+  }
+
+  async cancelExtract(): Promise<void> {
+    const jobId = this.extractJobId
+    if (jobId == null || !this.native) {
+      return
+    }
+    try {
+      await this.native.cancel(jobId)
+    } catch (err) {
+      this.setError(err)
+    }
+  }
+
+  async retryExtract(): Promise<void> {
+    const last = this.lastExtract
+    const job = this.snapshot.extractJob
+    if (last == null || job == null || !job.retryable) {
+      return
+    }
+    try {
+      await this.startExtract(last.destDir, last.members, last.overwrite)
+    } catch (err) {
+      this.handleExtractError(err)
+    }
+  }
+
+  private selectedMembers(): string[] {
+    return this.snapshot.selectedPaths
+  }
+
+  private async planAndExtract(destDir: string, members: string[]): Promise<void> {
+    const plan = await this.requirePlan(destDir, members)
+    const extractAll = members.length === 0
+    if (extractAll && (plan.files > EXTRACT_CONFIRM_FILES || plan.bytes > EXTRACT_CONFIRM_BYTES)) {
+      this.patch({
+        dialog: {
+          kind: 'confirm-extract',
+          destDir,
+          members,
+          files: plan.files,
+          bytes: plan.bytes,
+        },
+      })
+      return
+    }
+    await this.continueAfterPlan(destDir, members, plan)
+  }
+
+  private async continueAfterPlan(
+    destDir: string,
+    members: string[],
+    plan: ExtractPlan,
+  ): Promise<void> {
+    const native = this.native
+    if (!native) {
+      return
+    }
+    const cfg = await native.getConfig()
+    if (cfg.extract.overwrite === 'ask' && plan.conflictCount > 0) {
+      this.patch({
+        dialog: {
+          kind: 'overwrite',
+          destDir,
+          members,
+          conflictCount: plan.conflictCount,
+          conflicts: plan.conflicts.slice(0, EXTRACT_PLAN_CONFLICT_SAMPLE),
+          truncated: plan.conflictsTruncated,
+        },
+      })
+      return
+    }
+    const overwrite: NativeOverwrite =
+      cfg.extract.overwrite === 'replace' ? 'replace' : 'skip'
+    await this.startExtract(destDir, members, overwrite)
+  }
+
+  private async requirePlan(destDir: string, members: string[]): Promise<ExtractPlan> {
+    const native = this.native
+    const sessionId = this.sessionId
+    if (!native || sessionId == null) {
+      throw new CommandError('Internal', 'no open session', false)
+    }
+    return native.extractPlan({ sessionId, members, destDir })
+  }
+
+  private async startExtract(
+    destDir: string,
+    members: string[],
+    overwrite: NativeOverwrite,
+  ): Promise<void> {
+    const native = this.native
+    const sessionId = this.sessionId
+    if (!native || sessionId == null) {
+      throw new CommandError('Internal', 'no open session', false)
+    }
+    if (overwrite !== 'skip' && overwrite !== 'replace') {
+      throw new CommandError(
+        'Internal',
+        "extract overwrite 'ask' is UI-only; pass 'skip' or 'replace'",
+        false,
+      )
+    }
+    this.lastExtract = { destDir, members, overwrite }
+    this.extractInFlight = true
+    this.patch({
+      extractJob: {
+        jobId: this.extractJobId ?? 0,
+        filesDone: 0,
+        filesHint: null,
+        bytesOut: 0,
+        current: null,
+        status: 'running',
+        error: null,
+        errorCode: null,
+        retryable: false,
+      },
+    })
+    const { jobId } = await native.extract({
+      sessionId,
+      members,
+      destDir,
+      overwrite,
+    })
+    this.extractJobId = jobId
+    const finished = this.finishedJobs.get(jobId)
+    if (finished) {
+      this.finishedJobs.delete(jobId)
+      if (finished.error) {
+        this.applyExtractFailed(finished.error)
+        return
+      }
+      this.extractInFlight = false
+      this.patch({
+        extractJob: {
+          jobId,
+          filesDone: this.snapshot.extractJob?.filesDone ?? 0,
+          filesHint: this.snapshot.extractJob?.filesHint ?? null,
+          bytesOut: this.snapshot.extractJob?.bytesOut ?? 0,
+          current: this.snapshot.extractJob?.current ?? null,
+          status: 'succeeded',
+          error: null,
+          errorCode: null,
+          retryable: false,
+        },
+      })
+      return
+    }
+    const current = this.snapshot.extractJob
+    if (current) {
+      this.patch({ extractJob: { ...current, jobId } })
+    }
+  }
+
+  private applyExtractFailed(err: CommandError): void {
+    this.extractInFlight = false
+    const current = this.snapshot.extractJob
+    this.patch({
+      extractJob: current
+        ? {
+            ...current,
+            status: 'failed',
+            error: err.message,
+            errorCode: err.code,
+            retryable: err.retryable,
+          }
+        : current,
+      ...(err.code === 'PathEscape'
+        ? { dialog: { kind: 'path-escape' as const, message: err.message } }
+        : {}),
+    })
+  }
+
+  private queuePreview(): void {
+    const paths = this.snapshot.selectedPaths
+    if (paths.length !== 1) {
+      this.patch({ preview: null, previewPath: null })
+      return
+    }
+    const path = paths[0]
+    const ent = this.snapshot.entries.find((e) => e.path === path)
+    if (!ent || ent.isDir) {
+      this.patch({ preview: null, previewPath: null })
+      return
+    }
+    void this.loadPreview(path)
+  }
+
+  private async loadPreview(path: string): Promise<void> {
+    const native = this.native
+    const sessionId = this.sessionId
+    if (!native || sessionId == null) {
+      return
+    }
+    const gen = this.gen
+    this.patch({ previewPath: path, preview: null })
+    try {
+      const preview = await native.preview({ sessionId, path })
+      if (this.disposed || gen !== this.gen || this.snapshot.previewPath !== path) {
+        return
+      }
+      this.patch({ preview })
+    } catch (err) {
+      if (this.disposed || gen !== this.gen) {
+        return
+      }
+      const ce = commandErrorFromUnknown(err)
+      if (ce.code === 'PathEscape') {
+        this.patch({
+          preview: null,
+          dialog: { kind: 'path-escape', message: ce.message },
+        })
+        return
+      }
+      this.patch({ preview: { kind: 'skipped', reason: 'unknown' } })
+    }
+  }
+
+  private handleExtractError(err: unknown): void {
+    const ce = commandErrorFromUnknown(err)
+    if (ce.code === 'PathEscape') {
+      this.patch({
+        dialog: { kind: 'path-escape', message: ce.message },
+      })
+      return
+    }
+    this.setError(err)
   }
 
   private async sessionFromOpen(outcome: OpenResult): Promise<SessionId> {
@@ -512,6 +974,25 @@ export class ExplorerController {
   }
 
   private onJobSucceeded(event: { jobId: number; sessionId?: SessionId | null }): void {
+    if (this.extractInFlight || this.extractJobId === event.jobId) {
+      this.extractJobId = event.jobId
+      this.extractInFlight = false
+      const current = this.snapshot.extractJob
+      this.patch({
+        extractJob: {
+          jobId: event.jobId,
+          filesDone: current?.filesDone ?? 0,
+          filesHint: current?.filesHint ?? null,
+          bytesOut: current?.bytesOut ?? 0,
+          current: current?.current ?? null,
+          status: 'succeeded',
+          error: null,
+          errorCode: null,
+          retryable: false,
+        },
+      })
+      return
+    }
     const sessionId = event.sessionId ?? null
     if (sessionId == null) {
       const err = new CommandError('Internal', 'jobSucceeded missing sessionId', false)
@@ -539,6 +1020,11 @@ export class ExplorerController {
     message: string
     retryable: boolean
   }): void {
+    if (this.extractInFlight || this.extractJobId === event.jobId) {
+      this.extractJobId = event.jobId
+      this.applyExtractFailed(new CommandError(event.code, event.message, event.retryable))
+      return
+    }
     const err = new CommandError(event.code, event.message, event.retryable)
     const waiter = this.jobWaiters.get(event.jobId)
     if (waiter) {
@@ -549,9 +1035,63 @@ export class ExplorerController {
     this.finishedJobs.set(event.jobId, { error: err })
   }
 
+  private onJobCancelled(event: { jobId: number }): void {
+    if (!this.extractInFlight && this.extractJobId !== event.jobId) {
+      return
+    }
+    this.extractJobId = event.jobId
+    this.extractInFlight = false
+    const current = this.snapshot.extractJob
+    this.patch({
+      extractJob: current
+        ? { ...current, jobId: event.jobId, status: 'cancelled' }
+        : {
+            jobId: event.jobId,
+            filesDone: 0,
+            filesHint: null,
+            bytesOut: 0,
+            current: null,
+            status: 'cancelled',
+            error: null,
+            errorCode: null,
+            retryable: false,
+          },
+    })
+  }
+
+  private onExtractProgress(event: {
+    jobId: number
+    filesDone: number
+    filesHint?: number | null
+    bytesOut: number
+    current?: string | null
+  }): void {
+    if (!this.extractInFlight && this.extractJobId !== event.jobId) {
+      return
+    }
+    this.extractJobId = event.jobId
+    const current = this.snapshot.extractJob
+    this.patch({
+      extractJob: {
+        jobId: event.jobId,
+        filesDone: event.filesDone,
+        filesHint: event.filesHint ?? current?.filesHint ?? null,
+        bytesOut: event.bytesOut,
+        current: event.current ?? null,
+        status: 'running',
+        error: null,
+        errorCode: null,
+        retryable: false,
+      },
+    })
+  }
+
   private async closeSession(): Promise<void> {
     const sessionId = this.sessionId
     this.sessionId = null
+    this.extractJobId = null
+    this.extractInFlight = false
+    this.lastExtract = null
     if (sessionId != null && this.native) {
       await this.native.close(sessionId)
     }

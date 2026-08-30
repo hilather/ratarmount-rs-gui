@@ -8,14 +8,18 @@ const FAKE_MTIME: i64 = 1_700_000_000;
 pub struct FakeCatalog {
     entries: BTreeMap<String, DirEnt>,
     children: BTreeMap<String, Vec<String>>,
+    bodies: BTreeMap<String, Vec<u8>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ExtractFile {
+    pub path: String,
+    pub size: i64,
 }
 
 impl FakeCatalog {
     pub fn new() -> Self {
-        let mut catalog = Self {
-            entries: BTreeMap::new(),
-            children: BTreeMap::new(),
-        };
+        let mut catalog = Self::empty();
         catalog.add_dir("/");
         for i in 0..FAKE_ROOT_DIR_COUNT {
             catalog.add_dir_child("/", &format!("dir-{i:02}"));
@@ -23,9 +27,39 @@ impl FakeCatalog {
         for i in 0..FAKE_ROOT_FILE_COUNT {
             catalog.add_file("/", &format!("file-{i:03}"), 100 + i as i64);
         }
-        for name in ["a.txt", "b.txt", "c.txt"] {
-            catalog.add_file("/dir-00", name, 4);
+        catalog.add_file_with_body("/dir-00", "a.txt", Some(b"hi!\n".to_vec()));
+        catalog.add_file_with_body("/dir-00", "b.txt", Some(b"bb!\n".to_vec()));
+        catalog.add_file_with_body("/dir-00", "c.txt", Some(b"cc!\n".to_vec()));
+        catalog
+    }
+
+    pub fn empty() -> Self {
+        Self {
+            entries: BTreeMap::new(),
+            children: BTreeMap::new(),
+            bodies: BTreeMap::new(),
         }
+    }
+
+    /// 1000 files named `file-0000.txt` … `file-0999.txt`.
+    #[cfg(test)]
+    pub fn thousand_files() -> Self {
+        let mut catalog = Self::empty();
+        catalog.add_dir("/");
+        for i in 0..1000 {
+            let name = format!("file-{i:04}.txt");
+            let body = format!("member-{i:04}\n").into_bytes();
+            catalog.add_file_with_body("/", &name, Some(body));
+        }
+        catalog
+    }
+
+    #[cfg(test)]
+    pub fn with_preview_files() -> Self {
+        let mut catalog = Self::empty();
+        catalog.add_dir("/");
+        catalog.add_file_with_body("/", "tiny.txt", Some(b"hello\n".to_vec()));
+        catalog.add_file("/", "huge.bin", 9 * 1024 * 1024);
         catalog
     }
 
@@ -60,30 +94,53 @@ impl FakeCatalog {
     }
 
     pub fn totals(&self, members: &[String]) -> (i64, i64) {
+        let files = self.extract_files(members);
+        let bytes = files.iter().map(|e| e.size).sum();
+        (files.len() as i64, bytes)
+    }
+
+    pub fn extract_files(&self, members: &[String]) -> Vec<ExtractFile> {
         if members.is_empty() {
-            let files: Vec<&DirEnt> = self.entries.values().filter(|e| !e.is_dir).collect();
-            let bytes = files.iter().map(|e| e.size).sum();
-            (files.len() as i64, bytes)
-        } else {
-            let mut files = 0_i64;
-            let mut bytes = 0_i64;
-            for member in members {
-                if let Some(ent) = self.entries.get(member) {
-                    if ent.is_dir {
-                        for child in self.entries.values() {
-                            if !child.is_dir && is_under(&ent.path, &child.path) {
-                                files += 1;
-                                bytes += child.size;
-                            }
-                        }
-                    } else {
-                        files += 1;
-                        bytes += ent.size;
+            return self
+                .entries
+                .values()
+                .filter(|e| !e.is_dir)
+                .map(|e| ExtractFile {
+                    path: e.path.clone(),
+                    size: e.size,
+                })
+                .collect();
+        }
+        let mut files = Vec::new();
+        let mut seen = std::collections::BTreeSet::new();
+        for member in members {
+            let Some(ent) = self.entries.get(member) else {
+                continue;
+            };
+            if ent.is_dir {
+                for child in self.entries.values() {
+                    if !child.is_dir
+                        && is_under(&ent.path, &child.path)
+                        && seen.insert(child.path.clone())
+                    {
+                        files.push(ExtractFile {
+                            path: child.path.clone(),
+                            size: child.size,
+                        });
                     }
                 }
+            } else if seen.insert(ent.path.clone()) {
+                files.push(ExtractFile {
+                    path: ent.path.clone(),
+                    size: ent.size,
+                });
             }
-            (files, bytes)
         }
+        files
+    }
+
+    pub fn body(&self, path: &str) -> Option<&[u8]> {
+        self.bodies.get(path).map(Vec::as_slice)
     }
 
     fn add_dir(&mut self, path: &str) {
@@ -112,7 +169,25 @@ impl FakeCatalog {
     }
 
     fn add_file(&mut self, parent: &str, name: &str, size: i64) {
+        self.add_file_with_body_and_size(parent, name, size, None);
+    }
+
+    fn add_file_with_body(&mut self, parent: &str, name: &str, body: Option<Vec<u8>>) {
+        let size = body.as_ref().map(|b| b.len() as i64).unwrap_or(0);
+        self.add_file_with_body_and_size(parent, name, size, body);
+    }
+
+    fn add_file_with_body_and_size(
+        &mut self,
+        parent: &str,
+        name: &str,
+        size: i64,
+        body: Option<Vec<u8>>,
+    ) {
         let path = child_path(parent, name);
+        if let Some(bytes) = body {
+            self.bodies.insert(path.clone(), bytes);
+        }
         self.entries.insert(
             path.clone(),
             DirEnt {
