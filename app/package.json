@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "bun --hot app.tsx",
     "build": "bun build --compile app.tsx --outfile dist/ratarmount-gui",
+    "native:build": "bun run --cwd ../native build",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

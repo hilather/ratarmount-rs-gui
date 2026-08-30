@@ -7,3 +7,21 @@ publish = false
 
 [lib]
 crate-type = ["cdylib", "rlib"]
+
+[[bin]]
+name = "native"
+path = "src/bin/native.rs"
+
+[features]
+default = []
+# Compiles the napi-rs addon. Required for `napi build`; not needed for
+# `cargo test -p native` or `native --self-test` (those use the rlib API).
+napi-addon = ["dep:napi", "dep:napi-derive", "dep:rfd"]
+
+[dependencies]
+napi = { version = "=3.12.2", default-features = false, features = ["napi4", "dyn-symbols"], optional = true }
+napi-derive = { version = "=3.6.3", optional = true }
+rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"], optional = true }
+
+[build-dependencies]
+napi-build = "=2.4.1"

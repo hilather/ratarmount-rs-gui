@@ -9,7 +9,7 @@ This repository is a native GPUIX desktop explorer for [ratarmount-rs](https://g
 3. Read the current wave file under [docs/implementation/waves/](docs/implementation/waves/).
 4. If the change is architectural, read [docs/design/design.md](docs/design/design.md) and any relevant ADR.
 
-Status today: **W0 hello window**. Native crate is an unwired stub; napi wiring is the next wave.
+Status today: **W1 napi stubs**. Native crate exposes the 05 contract against a fake catalog (`cargo test -p native`, `native --self-test`). Explorer chrome is W3.
 
 ## Tests
 

@@ -12,6 +12,12 @@ target/
 **/*.rs.bk
 Cargo.lock.bak
 
+# napi-rs generated addon (built from native/)
+native/index.js
+native/index.d.ts
+native/*.node
+native/node_modules/
+
 # Indexes and fixture output (never commit generated sidecars)
 *.index.sqlite
 *.index.ptr
