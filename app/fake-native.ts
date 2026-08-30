@@ -25,7 +25,12 @@ export type FakeNative = NativeAddon & {
   closedSessions: number[]
 }
 
-export function createFakeNative(options: { pickFile?: string | null } = {}): FakeNative {
+export function createFakeNative(
+  options: {
+    pickFile?: string | null
+    openMode?: 'session' | 'job' | 'job-no-session' | 'job-failed'
+  } = {},
+): FakeNative {
   let nextSession = 1
   let nextJob = 1
   const sessions = new Map<number, string>()
@@ -45,17 +50,31 @@ export function createFakeNative(options: { pickFile?: string | null } = {}): Fa
     },
     async open(opts) {
       openCalls.push(opts)
-      const sessionId = nextSession++
-      sessions.set(sessionId, opts.source)
-      if (opts.recreate === 'always') {
-        const jobId = nextJob++
-        const event = { jobId, sessionId }
-        for (const cb of succeeded) {
-          cb(event)
+      const mode = options.openMode ?? (opts.recreate === 'always' ? 'job' : 'session')
+      if (mode === 'session') {
+        const sessionId = nextSession++
+        sessions.set(sessionId, opts.source)
+        return { sessionId }
+      }
+      const jobId = nextJob++
+      if (mode === 'job-failed') {
+        for (const cb of failed) {
+          cb({ jobId, code: 'Internal', message: 'index failed', retryable: false })
         }
         return { jobId }
       }
-      return { sessionId }
+      if (mode === 'job-no-session') {
+        for (const cb of succeeded) {
+          cb({ jobId })
+        }
+        return { jobId }
+      }
+      const sessionId = nextSession++
+      sessions.set(sessionId, opts.source)
+      for (const cb of succeeded) {
+        cb({ jobId, sessionId })
+      }
+      return { jobId }
     },
     async close(sessionId) {
       if (!sessions.delete(sessionId)) {

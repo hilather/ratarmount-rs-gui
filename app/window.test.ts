@@ -30,11 +30,15 @@ test('explorer chrome uses the placeholder and dark canvas', async () => {
   expect(source).toContain('testId="list"')
 })
 
-test('native-addon.ts documents the napi import path', async () => {
-  const { NATIVE_ADDON_MODULE } = await import('./native-addon')
+test('native addon is loaded with a dynamic specifier, not a static import', async () => {
+  const { NATIVE_ADDON_MODULE, loadNativeAddon } = await import('./native-addon')
   expect(NATIVE_ADDON_MODULE).toBe('../native')
-  const source = await Bun.file(new URL('./native-addon.ts', import.meta.url)).text()
-  expect(source).toContain("from '../native'")
+  const addonSource = await Bun.file(new URL('./native-addon.ts', import.meta.url)).text()
+  const appSource = await Bun.file(new URL('./app.tsx', import.meta.url)).text()
+  expect(addonSource).toContain('import(spec)')
+  expect(addonSource).not.toMatch(/import\s*\{[^}]*\}\s*from\s*['"]\.\.\/native['"]/)
+  expect(appSource).not.toContain("from '../native'")
+  await expect(loadNativeAddon()).rejects.toThrow(/Native addon is not built/)
 })
 
 test('package scripts do not advertise a browser target', async () => {

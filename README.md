@@ -57,8 +57,7 @@ cd app && bun install && bun run dev
 cargo test -p native
 cargo run -p native -- --self-test
 
-# Native addon used by Open / list (napi-addon feature):
-#   import { pickFile, list, open, close, on } from '../native'
+# Native addon used by Open / list (`loadNativeAddon()` in app/native-addon.ts)
 cd native && bun install && bun run build
 ```
 

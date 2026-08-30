@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import {
   countLabel,
   crumbsFor,
+  ExplorerController,
   formatMtime,
   formatSize,
   shortenPath,
@@ -29,6 +30,29 @@ export type ExplorerHandlers = {
   onRowClick(index: number, clickCount: number): void
   onKey(key: string): void
   onVisibleRange(startIndex: number, endIndex: number): void
+}
+
+export function explorerHandlers(controller: ExplorerController): ExplorerHandlers {
+  return {
+    onOpen: () => {
+      void controller.openPicked()
+    },
+    onClose: () => {
+      void controller.closeArchive()
+    },
+    onCrumb: (path) => {
+      void controller.enterPath(path)
+    },
+    onRowClick: (index, clickCount) => {
+      controller.onRowClick(index, clickCount)
+    },
+    onKey: (key) => {
+      controller.handleKey(key)
+    },
+    onVisibleRange: (start, end) => {
+      controller.onVisibleRange(start, end)
+    },
+  }
 }
 
 export function ExplorerView({
@@ -80,7 +104,12 @@ export function ExplorerView({
           borderColor: BORDER,
         }}
       >
-        <ToolButton testId="open" label="Open" onClick={onOpen} />
+        <ToolButton
+          testId="open"
+          label="Open"
+          onClick={onOpen}
+          disabled={!model.nativeReady && model.status !== 'error'}
+        />
         <ToolButton
           testId="close"
           label="Close"

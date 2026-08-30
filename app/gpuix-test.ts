@@ -19,6 +19,24 @@ export function queryByTestId(node: ReactNode, testId: string): ReactElement | n
   return null
 }
 
+export function clickByTestId(node: ReactNode, testId: string, event: object = {}): void {
+  const el = getByTestId(node, testId)
+  const onClick = (el.props as { onClick?: (e: object) => void }).onClick
+  if (!onClick) {
+    throw new Error(`No onClick handler on testId="${testId}"`)
+  }
+  onClick(event)
+}
+
+export function keyDownByTestId(node: ReactNode, testId: string, key: string): void {
+  const el = getByTestId(node, testId)
+  const onKeyDown = (el.props as { onKeyDown?: (e: { key: string }) => void }).onKeyDown
+  if (!onKeyDown) {
+    throw new Error(`No onKeyDown handler on testId="${testId}"`)
+  }
+  onKeyDown({ key })
+}
+
 export function collectTestIds(node: ReactNode): string[] {
   const ids: string[] = []
   for (const el of hostElements(node)) {

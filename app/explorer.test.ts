@@ -1,7 +1,7 @@
 import { expect, test } from 'bun:test'
 import type { ReactElement } from 'react'
 
-import { ExplorerView, type ExplorerHandlers } from './explorer-view'
+import { ExplorerView, explorerHandlers, type ExplorerHandlers } from './explorer-view'
 import {
   countLabel,
   crumbsFor,
@@ -21,7 +21,7 @@ import {
   FAKE_ROOT_FILE_COUNT,
   FAKE_ROOT_TOTAL,
 } from './fake-native'
-import { collectTestIds, getByTestId, queryByTestId } from './gpuix-test'
+import { clickByTestId, collectTestIds, getByTestId, keyDownByTestId, queryByTestId } from './gpuix-test'
 
 const noop: ExplorerHandlers = {
   onOpen() {},
@@ -298,4 +298,131 @@ test('ExplorerView is a GPUIX host tree (virtual-list + testIds)', async () => {
   expect(ids).not.toContain('search')
   expect(ids).not.toContain('preview')
   expect(ids).not.toContain('extract')
+})
+
+test('getByTestId chrome controls fire ExplorerView handlers', async () => {
+  const { controller } = await openRoot()
+  await controller.enterPath('/dir-00')
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+
+  clickByTestId(tree, 'crumb-root')
+  await waitFor(
+    controller,
+    (s) => s.path === '/' && !s.listing && s.entries.length === LIST_LIMIT_DEFAULT,
+  )
+
+  const listed = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(listed, 'row-dir-00', { clickCount: 2 })
+  await waitFor(controller, (s) => s.path === '/dir-00' && !s.listing && s.entries.length === 3)
+
+  const nested = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  keyDownByTestId(nested, 'explorer', 'backspace')
+  await waitFor(
+    controller,
+    (s) => s.path === '/' && !s.listing && s.entries.length === LIST_LIMIT_DEFAULT,
+  )
+
+  const root = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  keyDownByTestId(root, 'explorer', 'j')
+  expect(controller.getSnapshot().selectedIndex).toBe(1)
+
+  clickByTestId(root, 'close')
+  await waitFor(controller, (s) => s.status === 'idle')
+})
+
+test('Open host onClick opens via the fake picker', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/hello.tar' })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'open')
+  await waitFor(
+    controller,
+    (s) => s.status === 'ready' && s.entries.length === LIST_LIMIT_DEFAULT,
+  )
+  expect(fake.openCalls).toHaveLength(1)
+})
+
+test('Open is disabled until the native addon is ready', () => {
+  const controller = new ExplorerController()
+  let opened = false
+  const tree = renderView(controller.getSnapshot(), {
+    onOpen: () => {
+      opened = true
+    },
+  })
+  clickByTestId(tree, 'open')
+  expect(opened).toBe(false)
+  expect(controller.getSnapshot().nativeReady).toBe(false)
+})
+
+test('Open retries loadNative when the first import failed', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/hello.tar' })
+  const controller = new ExplorerController()
+  let attempts = 0
+  controller.setNativeLoader(async () => {
+    attempts++
+    return fake
+  })
+  controller.failLoad(new Error('Native addon is not built'))
+  expect(controller.getSnapshot().status).toBe('error')
+  expect(controller.getSnapshot().nativeReady).toBe(false)
+
+  await controller.openPicked()
+  expect(attempts).toBe(1)
+  expect(controller.getSnapshot().status).toBe('ready')
+  expect(controller.getSnapshot().nativeReady).toBe(true)
+})
+
+test('setNative clears a previous addon-load error', () => {
+  const fake = createFakeNative()
+  const controller = new ExplorerController()
+  controller.failLoad(new Error('Native addon is not built'))
+  controller.setNative(fake)
+  expect(controller.getSnapshot().status).toBe('idle')
+  expect(controller.getSnapshot().error).toBeNull()
+  expect(controller.getSnapshot().nativeReady).toBe(true)
+})
+
+test('open { jobId } plus jobSucceeded reaches ready', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/hello.tar', openMode: 'job' })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  expect(controller.getSnapshot().status).toBe('ready')
+  expect(controller.getSnapshot().entries.length).toBe(LIST_LIMIT_DEFAULT)
+  expect(fake.openCalls[0]?.recreate).toBe('if-invalid')
+})
+
+test('open jobFailed surfaces the command error', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/hello.tar', openMode: 'job-failed' })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  expect(controller.getSnapshot().status).toBe('error')
+  expect(controller.getSnapshot().error).toContain('index failed')
+})
+
+test('jobSucceeded without sessionId rejects instead of hanging', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    openMode: 'job-no-session',
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await Promise.race([
+    controller.openPicked(),
+    new Promise((_, reject) => {
+      setTimeout(() => reject(new Error('hung waiting for jobSucceeded sessionId')), 200)
+    }),
+  ])
+  expect(controller.getSnapshot().status).toBe('error')
+  expect(controller.getSnapshot().error).toMatch(/sessionId/)
+})
+
+test('App wires explorerHandlers onto the injected native', async () => {
+  const source = await Bun.file(new URL('./app.tsx', import.meta.url)).text()
+  expect(source).toContain('explorerHandlers')
+  expect(source).toContain('setNativeLoader')
+  expect(source).toContain('native?: NativeAddon')
 })

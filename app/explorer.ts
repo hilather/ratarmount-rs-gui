@@ -168,12 +168,10 @@ export class ExplorerController {
   private readonly nearEnd: number
   private gen = 0
   private disposed = false
-  private readonly jobWaiters = new Map<JobIdWaitKey, JobWaiter>()
-  private readonly finishedJobs = new Map<
-    JobIdWaitKey,
-    { sessionId?: SessionId; error?: CommandError }
-  >()
+  private readonly jobWaiters = new Map<number, JobWaiter>()
+  private readonly finishedJobs = new Map<number, { sessionId?: SessionId; error?: CommandError }>()
   private listening = false
+  private loadNative: (() => Promise<NativeAddon>) | null = null
 
   constructor(options: ExplorerOptions = {}) {
     const limit = options.listLimit ?? LIST_LIMIT_DEFAULT
@@ -190,6 +188,10 @@ export class ExplorerController {
 
   getSnapshot = (): ExplorerSnapshot => this.snapshot
 
+  setNativeLoader(loader: () => Promise<NativeAddon>): void {
+    this.loadNative = loader
+  }
+
   setNative(native: NativeAddon): void {
     this.native = native
     if (!this.listening) {
@@ -197,7 +199,14 @@ export class ExplorerController {
       native.on('jobFailed', (event) => this.onJobFailed(event))
       this.listening = true
     }
-    this.patch({ nativeReady: true })
+    const clearLoadError =
+      this.snapshot.status === 'error' && this.snapshot.archivePath == null
+    this.patch({
+      nativeReady: true,
+      ...(clearLoadError
+        ? { status: 'idle' as const, error: null, errorRetryable: false }
+        : {}),
+    })
   }
 
   failLoad(err: unknown): void {
@@ -220,11 +229,14 @@ export class ExplorerController {
   }
 
   async openPicked(): Promise<void> {
-    const native = this.requireNative()
-    if (!native) {
+    if (this.snapshot.status === 'opening') {
       return
     }
-    if (this.snapshot.status === 'opening') {
+    if (!(await this.ensureNative())) {
+      return
+    }
+    const native = this.native
+    if (!native) {
       return
     }
     try {
@@ -501,21 +513,24 @@ export class ExplorerController {
 
   private onJobSucceeded(event: { jobId: number; sessionId?: SessionId | null }): void {
     const sessionId = event.sessionId ?? null
+    if (sessionId == null) {
+      const err = new CommandError('Internal', 'jobSucceeded missing sessionId', false)
+      const waiter = this.jobWaiters.get(event.jobId)
+      if (waiter) {
+        this.jobWaiters.delete(event.jobId)
+        waiter.reject(err)
+        return
+      }
+      this.finishedJobs.set(event.jobId, { error: err })
+      return
+    }
     const waiter = this.jobWaiters.get(event.jobId)
     if (waiter) {
       this.jobWaiters.delete(event.jobId)
-      if (sessionId == null) {
-        waiter.reject(
-          new CommandError('Internal', 'jobSucceeded missing sessionId', false),
-        )
-        return
-      }
       waiter.resolve(sessionId)
       return
     }
-    this.finishedJobs.set(event.jobId, {
-      sessionId: sessionId ?? undefined,
-    })
+    this.finishedJobs.set(event.jobId, { sessionId })
   }
 
   private onJobFailed(event: {
@@ -540,6 +555,23 @@ export class ExplorerController {
     if (sessionId != null && this.native) {
       await this.native.close(sessionId)
     }
+  }
+
+  private async ensureNative(): Promise<boolean> {
+    if (this.native) {
+      return true
+    }
+    if (this.loadNative) {
+      try {
+        this.setNative(await this.loadNative())
+        return this.native != null
+      } catch (err) {
+        this.failLoad(err)
+        return false
+      }
+    }
+    this.requireNative()
+    return false
   }
 
   private requireNative(): NativeAddon | null {
@@ -578,5 +610,3 @@ export class ExplorerController {
     }
   }
 }
-
-type JobIdWaitKey = number

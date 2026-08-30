@@ -1,5 +1,3 @@
-/** JS-visible slice of docs/architecture/05-napi-contract.md that W3 may call. */
-
 export type SessionId = number
 export type JobId = number
 export type Cursor = string
@@ -213,8 +211,12 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
 
   return {
     async pickFile() {
-      const value = await Promise.resolve(pickFileFn())
-      return value == null ? null : String(value)
+      try {
+        const value = await Promise.resolve(pickFileFn())
+        return value == null ? null : String(value)
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
     },
     async open(opts) {
       try {
@@ -246,15 +248,19 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
       }
     },
     on(event, cb) {
-      onFn(event, (payload: unknown) => {
-        if (event === 'jobSucceeded') {
-          ;(cb as (e: JobSucceededEvent) => void)(normalizeJobSucceeded(payload))
-          return
-        }
-        if (event === 'jobFailed') {
-          ;(cb as (e: JobFailedEvent) => void)(normalizeJobFailed(payload))
-        }
-      })
+      try {
+        onFn(event, (payload: unknown) => {
+          if (event === 'jobSucceeded') {
+            ;(cb as (e: JobSucceededEvent) => void)(normalizeJobSucceeded(payload))
+            return
+          }
+          if (event === 'jobFailed') {
+            ;(cb as (e: JobFailedEvent) => void)(normalizeJobFailed(payload))
+          }
+        })
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
     },
   }
 }

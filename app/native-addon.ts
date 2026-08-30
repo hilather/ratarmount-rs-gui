@@ -1,18 +1,6 @@
 import { wrapNativeModule, type NativeAddon } from './napi'
 
-/**
- * How the UI imports the W1 napi addon.
- *
- * After `cd native && bun install && bun run build` (enables Cargo feature
- * `napi-addon`; or `napi build --platform --esm --features napi-addon` in
- * `native/`), W3 loads commands from the generated binding:
- *
- *   import { pickFile, list, open, close, on } from '../native'
- *
- * `bun run dev` still starts if the `.node` is missing; Open then surfaces
- * the load error. Listing is paged with an opaque cursor string.
- * There is no `readAll`. Archive member bytes never cross this import.
- */
+/** Specifier for the generated napi binding. Loaded dynamically so a missing `.node` does not fail module load. */
 export const NATIVE_ADDON_MODULE = '../native' as const
 
 export async function loadNativeAddon(): Promise<NativeAddon> {

@@ -65,7 +65,9 @@ test('wrapNativeModule exposes pickFile/open/list/close/on', async () => {
 
 test('wrapNativeModule maps command errors onto CommandError', async () => {
   const addon = wrapNativeModule({
-    pickFile: () => null,
+    pickFile: () => {
+      throw Object.assign(new Error('dialog failed'), { code: 'Internal', retryable: false })
+    },
     open: () => {
       throw Object.assign(new Error('unknown archive'), { code: 'NotFound', retryable: false })
     },
@@ -74,7 +76,9 @@ test('wrapNativeModule maps command errors onto CommandError', async () => {
       throw new Error('boom')
     },
     lookup: () => null,
-    on: () => {},
+    on: () => {
+      throw new Error('bad event')
+    },
   })
   try {
     await addon.open({ source: 'nope', policy: 'sibling', recreate: 'if-invalid' })
@@ -84,4 +88,19 @@ test('wrapNativeModule maps command errors onto CommandError', async () => {
     expect((err as CommandError).code).toBe('NotFound')
     expect((err as CommandError).retryable).toBe(false)
   }
+  try {
+    await addon.list({ sessionId: 1, path: '/' })
+    throw new Error('expected list to throw')
+  } catch (err) {
+    expect(err).toBeInstanceOf(CommandError)
+    expect((err as CommandError).message).toBe('boom')
+  }
+  try {
+    await addon.pickFile()
+    throw new Error('expected pickFile to throw')
+  } catch (err) {
+    expect(err).toBeInstanceOf(CommandError)
+    expect((err as CommandError).message).toBe('dialog failed')
+  }
+  expect(() => addon.on('jobSucceeded', () => {})).toThrow(CommandError)
 })
