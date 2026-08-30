@@ -2,6 +2,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::FakeCatalog;
+use crate::commands::{drive_extract_work, write_extract_item, ExtractStep};
 use crate::error::ErrorCode;
 use crate::events::Event;
 use crate::paths::{is_encrypted_source, member_dest_path};
@@ -307,7 +308,40 @@ fn napi_extract_spawns_worker_after_job_id() {
     let src = include_str!("napi_api.rs");
     assert!(src.contains("begin_extract"));
     assert!(src.contains("thread::spawn"));
-    assert!(src.contains("run_extract_job"));
+    assert!(src.contains("run_extract_job_unlocked"));
+    assert!(src.contains("take_extract_work"));
+    assert!(src.contains("drive_extract_work"));
+}
+
+#[test]
+fn cancel_during_dest_write_stops_further_writes() {
+    let tmp = TempTree::new("cancel-mid");
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::for_test();
+    let session_id = app.open_catalog("members-1000.tar", FakeCatalog::thousand_files());
+    let job_id = app
+        .begin_extract(ExtractOpts {
+            session_id,
+            members: vec![],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .unwrap();
+    let work = app.take_extract_work(job_id).expect("pending dest work");
+    assert!(work.items.len() > 2);
+    write_extract_item(&work.items[0], work.overwrite).unwrap();
+    app.cancel(job_id).unwrap();
+    assert!(app.job_cancel_requested(job_id));
+    let mut extra = 0_usize;
+    drive_extract_work(work, |step| {
+        if matches!(step, ExtractStep::Progress { .. }) {
+            extra += 1;
+        }
+    });
+    assert_eq!(extra, 0, "cancel must skip remaining dest writes");
+    let written = fs::read_dir(&dest).unwrap().count();
+    assert_eq!(written, 1);
 }
 
 #[test]

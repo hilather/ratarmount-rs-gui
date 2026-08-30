@@ -1,6 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Instant;
 
 use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, page_names, sample_conflicts};
@@ -297,83 +298,76 @@ impl NativeApp {
         Ok(job_id)
     }
 
-    /// Write planned members. No-op if the job has no pending dest work.
-    pub fn run_extract_job(&mut self, job_id: u32) {
-        let (overwrite, items, cancel, session_id) = {
-            let Some(job) = self.jobs.get_mut(&job_id) else {
-                return;
-            };
-            if job.status != JobStatus::Running {
-                return;
-            }
-            let Some(pending) = job.pending_extract.take() else {
-                return;
-            };
-            (
-                pending.overwrite,
-                pending.items,
-                job.cancel.clone(),
-                job.session_id,
-            )
-        };
-        let files_hint = items.len() as i64;
-        let mut files_done = 0_i64;
-        let mut bytes_out = 0_i64;
-        for item in items {
-            if cancel.load(Ordering::SeqCst) {
-                if let Some(job) = self.jobs.get_mut(&job_id) {
-                    job.status = JobStatus::Cancelled;
-                }
-                self.emit(Event::JobCancelled { job_id });
-                return;
-            }
-            if item.dest.exists() && overwrite == Overwrite::Skip {
-                files_done += 1;
-                self.emit(Event::ExtractProgress {
-                    job_id,
-                    files_done,
-                    files_hint: Some(files_hint),
-                    bytes_out,
-                    current: Some(item.member),
-                });
-                continue;
-            }
-            if let Some(parent) = item.dest.parent() {
-                if let Err(err) = fs::create_dir_all(parent) {
-                    let _ = fail_extract_job(
-                        self,
-                        job_id,
-                        ApiError::not_writable(format!("create dest: {err}")),
-                    );
-                    return;
-                }
-            }
-            match fs::write(&item.dest, &item.body) {
-                Ok(()) => {
-                    files_done += 1;
-                    bytes_out += item.body.len() as i64;
-                    self.emit(Event::ExtractProgress {
-                        job_id,
-                        files_done,
-                        files_hint: Some(files_hint),
-                        bytes_out,
-                        current: Some(item.member),
-                    });
-                }
-                Err(err) => {
-                    let _ = fail_extract_job(
-                        self,
-                        job_id,
-                        ApiError::not_writable(format!("write dest: {err}")),
-                    );
-                    return;
-                }
-            }
+    pub fn take_extract_work(&mut self, job_id: u32) -> Option<ExtractWork> {
+        let job = self.jobs.get_mut(&job_id)?;
+        if job.status != JobStatus::Running {
+            return None;
         }
+        let pending = job.pending_extract.take()?;
+        Some(ExtractWork {
+            overwrite: pending.overwrite,
+            items: pending.items,
+            cancel: job.cancel.clone(),
+            session_id: job.session_id,
+        })
+    }
+
+    pub fn mark_extract_cancelled(&mut self, job_id: u32) {
         if let Some(job) = self.jobs.get_mut(&job_id) {
-            job.status = JobStatus::Succeeded;
+            if job.status == JobStatus::Running {
+                job.status = JobStatus::Cancelled;
+                self.emit(Event::JobCancelled { job_id });
+            }
         }
-        self.emit(Event::JobSucceeded { job_id, session_id });
+    }
+
+    pub fn mark_extract_succeeded(&mut self, job_id: u32, session_id: Option<u32>) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.status == JobStatus::Running {
+                job.status = JobStatus::Succeeded;
+                self.emit(Event::JobSucceeded { job_id, session_id });
+            }
+        }
+    }
+
+    pub fn emit_extract_progress(
+        &mut self,
+        job_id: u32,
+        files_done: i64,
+        files_hint: i64,
+        bytes_out: i64,
+        current: String,
+    ) {
+        self.emit(Event::ExtractProgress {
+            job_id,
+            files_done,
+            files_hint: Some(files_hint),
+            bytes_out,
+            current: Some(current),
+        });
+    }
+
+    /// Write planned members. Holds `&mut self` for the rlib/test path.
+    pub fn run_extract_job(&mut self, job_id: u32) {
+        let Some(work) = self.take_extract_work(job_id) else {
+            return;
+        };
+        let session_id = work.session_id;
+        let files_hint = work.items.len() as i64;
+        drive_extract_work(work, |step| match step {
+            ExtractStep::Progress {
+                files_done,
+                bytes_out,
+                current,
+            } => {
+                self.emit_extract_progress(job_id, files_done, files_hint, bytes_out, current);
+            }
+            ExtractStep::Cancelled => self.mark_extract_cancelled(job_id),
+            ExtractStep::Failed(err) => {
+                let _ = fail_extract_job(self, job_id, err);
+            }
+            ExtractStep::Succeeded => self.mark_extract_succeeded(job_id, session_id),
+        });
     }
 
     pub fn cancel(&mut self, job_id: u32) -> Result<()> {
@@ -507,6 +501,66 @@ impl NativeApp {
 pub enum FuseMountResult {
     Mountpoint { mountpoint: String },
     Error { error: String },
+}
+
+pub struct ExtractWork {
+    pub overwrite: Overwrite,
+    pub items: Vec<PendingExtractItem>,
+    pub cancel: Arc<AtomicBool>,
+    pub session_id: Option<u32>,
+}
+
+pub enum ExtractStep {
+    Progress {
+        files_done: i64,
+        bytes_out: i64,
+        current: String,
+    },
+    Cancelled,
+    Failed(ApiError),
+    Succeeded,
+}
+
+pub fn write_extract_item(item: &PendingExtractItem, overwrite: Overwrite) -> Result<i64> {
+    if item.dest.exists() && overwrite == Overwrite::Skip {
+        return Ok(0);
+    }
+    if let Some(parent) = item.dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| ApiError::not_writable(format!("create dest: {err}")))?;
+    }
+    fs::write(&item.dest, &item.body)
+        .map_err(|err| ApiError::not_writable(format!("write dest: {err}")))?;
+    Ok(item.body.len() as i64)
+}
+
+/// Dest writes happen between `on_step` calls so the caller can drop a mutex.
+pub fn drive_extract_work(work: ExtractWork, mut on_step: impl FnMut(ExtractStep)) {
+    let mut files_done = 0_i64;
+    let mut bytes_out = 0_i64;
+    for item in work.items {
+        if work.cancel.load(Ordering::SeqCst) {
+            on_step(ExtractStep::Cancelled);
+            return;
+        }
+        let current = item.member.clone();
+        match write_extract_item(&item, work.overwrite) {
+            Ok(n) => {
+                files_done += 1;
+                bytes_out += n;
+                on_step(ExtractStep::Progress {
+                    files_done,
+                    bytes_out,
+                    current,
+                });
+            }
+            Err(err) => {
+                on_step(ExtractStep::Failed(err));
+                return;
+            }
+        }
+    }
+    on_step(ExtractStep::Succeeded);
 }
 
 fn plan_dest_conflicts(

@@ -38,6 +38,7 @@ export type FakeNative = NativeAddon & {
   previewCalls: { sessionId: number; path: string }[]
   extractPlanCalls: { sessionId: number; members: string[]; destDir: string }[]
   written: Map<string, Uint8Array>
+  extractMode: 'ok' | 'hold' | 'busy' | 'path-escape'
   completeExtract(jobId: number): void
   failExtract(jobId: number, code: string, message: string, retryable: boolean): void
 }
@@ -88,6 +89,7 @@ export function createFakeNative(
     previewCalls,
     extractPlanCalls,
     written,
+    extractMode: options.extractMode ?? 'ok',
     completeExtract(jobId: number) {
       heldJobs.delete(jobId)
       for (const cb of extractProgress) {
@@ -241,7 +243,7 @@ export function createFakeNative(
         }
       }
       const jobId = nextJob++
-      const mode = options.extractMode ?? 'ok'
+      const mode = fake.extractMode
       if (mode === 'path-escape') {
         throw new CommandError('PathEscape', 'path escape', false)
       }

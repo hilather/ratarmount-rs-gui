@@ -229,7 +229,9 @@ export class ExplorerController {
     members: string[]
     overwrite: NativeOverwrite
   } | null = null
-  private openAfterExtract: { destDir: string; member: string } | null = null
+  private openAfterExtract: { jobId: number | null; destDir: string; member: string } | null =
+    null
+  private systemOpens: string[] = []
 
   constructor(options: ExplorerOptions = {}) {
     const limit = options.listLimit ?? LIST_LIMIT_DEFAULT
@@ -245,6 +247,10 @@ export class ExplorerController {
   }
 
   getSnapshot = (): ExplorerSnapshot => this.snapshot
+
+  openedWithSystem(): readonly string[] {
+    return this.systemOpens
+  }
 
   setNativeLoader(loader: () => Promise<NativeAddon>): void {
     this.loadNative = loader
@@ -719,7 +725,7 @@ export class ExplorerController {
       if (destDir == null) {
         return
       }
-      this.openAfterExtract = { destDir, member: path }
+      this.openAfterExtract = { jobId: null, destDir, member: path }
       await this.planAndExtract(destDir, [path])
     } catch (err) {
       this.openAfterExtract = null
@@ -889,6 +895,9 @@ export class ExplorerController {
       throw err
     }
     this.extractJobId = jobId
+    if (this.openAfterExtract && this.openAfterExtract.jobId == null) {
+      this.openAfterExtract = { ...this.openAfterExtract, jobId }
+    }
     const finished = this.finishedJobs.get(jobId)
     if (finished) {
       this.finishedJobs.delete(jobId)
@@ -910,19 +919,25 @@ export class ExplorerController {
           retryable: false,
         },
       })
-      void this.maybeOpenExtracted()
+      void this.maybeOpenExtracted(jobId)
       return
     }
     const current = this.snapshot.extractJob
     if (current) {
       this.patch({ extractJob: { ...current, jobId } })
     }
+    if (this.snapshot.extractJob?.status === 'succeeded') {
+      void this.maybeOpenExtracted(jobId)
+    }
   }
 
-  private async maybeOpenExtracted(): Promise<void> {
+  private async maybeOpenExtracted(jobId: number): Promise<void> {
     const pending = this.openAfterExtract
+    if (pending == null || pending.jobId !== jobId) {
+      return
+    }
     this.openAfterExtract = null
-    if (pending == null || !this.native) {
+    if (!this.native) {
       return
     }
     try {
@@ -932,6 +947,7 @@ export class ExplorerController {
       }
       const rel = pending.member.replace(/^\//, '')
       const dest = `${pending.destDir.replace(/\/$/, '')}/${rel}`
+      this.systemOpens.push(dest)
       spawnOpenWithSystem(dest)
     } catch {
       // Extract already succeeded.
@@ -939,6 +955,7 @@ export class ExplorerController {
   }
 
   private applyExtractFailed(err: CommandError): void {
+    this.openAfterExtract = null
     this.extractInFlight = false
     const current = this.snapshot.extractJob
     this.patch({
@@ -1053,7 +1070,7 @@ export class ExplorerController {
           retryable: false,
         },
       })
-      void this.maybeOpenExtracted()
+      void this.maybeOpenExtracted(event.jobId)
       return
     }
     const sessionId = event.sessionId ?? null
@@ -1101,6 +1118,9 @@ export class ExplorerController {
   private onJobCancelled(event: { jobId: number }): void {
     if (!this.extractInFlight && this.extractJobId !== event.jobId) {
       return
+    }
+    if (this.openAfterExtract?.jobId === event.jobId || this.openAfterExtract?.jobId == null) {
+      this.openAfterExtract = null
     }
     this.extractJobId = event.jobId
     this.extractInFlight = false

@@ -577,6 +577,31 @@ test('default 8 MiB preview cap skips a 9 MiB member', async () => {
   await waitFor(controller, (s) => s.extractJob?.status === 'succeeded' || s.dialog.kind === 'overwrite')
   expect(fake.extractPlanCalls.length).toBeGreaterThan(0)
   expect(fake.extractCalls.every((c) => c.overwrite !== ('ask' as typeof c.overwrite))).toBe(true)
+  expect(controller.openedWithSystem().some((p) => p.includes('huge.bin'))).toBe(true)
+})
+
+test('failed extract-open-with-system does not open on a later jobSucceeded', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    extraFiles: [{ parent: '/dir-00', name: 'huge.bin', size: NINE_MIB }],
+    extractMode: 'busy',
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  await controller.enterPath('/dir-00')
+  const huge = controller.getSnapshot().entries.findIndex((e) => e.name === 'huge.bin')
+  controller.onRowClick(huge, 1)
+  await waitFor(controller, (s) => s.preview?.kind === 'skipped')
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'extract-open-system')
+  await waitFor(controller, (s) => s.extractJob?.status === 'failed')
+  expect(controller.openedWithSystem()).toEqual([])
+  fake.extractMode = 'ok'
+  const retry = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(retry, 'extract')
+  await waitFor(controller, (s) => s.extractJob?.status === 'succeeded')
+  expect(controller.openedWithSystem()).toEqual([])
 })
 
 test('progress cancel fires view handler', async () => {
