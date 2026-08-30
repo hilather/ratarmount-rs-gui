@@ -23,6 +23,10 @@ pub fn is_fixture_source(source: &str) -> bool {
 }
 
 pub fn normalize_archive_path(path: &str) -> Result<String> {
+    normalize_member_path(path, false)
+}
+
+pub fn normalize_member_path(path: &str, allow_dotdot: bool) -> Result<String> {
     if path.contains('\0') {
         return Err(ApiError::path_escape("NUL in archive path"));
     }
@@ -36,7 +40,7 @@ pub fn normalize_archive_path(path: &str) -> Result<String> {
     while p.len() > 1 && p.ends_with('/') {
         p.pop();
     }
-    if p.split('/').any(|s| s == "..") {
+    if !allow_dotdot && p.split('/').any(|s| s == "..") {
         return Err(ApiError::path_escape("path escape"));
     }
     Ok(p)

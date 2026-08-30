@@ -2,6 +2,7 @@ use std::sync::{Mutex, OnceLock};
 
 use napi::bindgen_prelude::*;
 use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
+use napi::JsValue;
 use napi_derive::napi;
 
 use crate::commands::FuseMountResult;
@@ -50,11 +51,23 @@ fn js_listeners() -> &'static Mutex<JsListeners> {
     LISTENERS.get_or_init(|| Mutex::new(JsListeners::new()))
 }
 
-fn napi_err(err: ApiError) -> Error {
-    Error::from_reason(err.to_string())
+fn napi_err(env: Env, err: ApiError) -> Error {
+    let shape = err.to_command_error();
+    let mut obj = match env.create_error(Error::new(Status::GenericFailure, shape.message.as_str()))
+    {
+        Ok(obj) => obj,
+        Err(e) => return e,
+    };
+    if obj.set("code", shape.code.as_str()).is_err()
+        || obj.set("message", shape.message.as_str()).is_err()
+        || obj.set("retryable", shape.retryable).is_err()
+    {
+        return Error::from_reason(shape.message);
+    }
+    Error::from(obj.to_unknown())
 }
 
-fn with_app<T>(f: impl FnOnce(&mut NativeApp) -> crate::error::Result<T>) -> Result<T> {
+fn with_app<T>(env: Env, f: impl FnOnce(&mut NativeApp) -> crate::error::Result<T>) -> Result<T> {
     let mut app = global_app().lock().expect("native state mutex poisoned");
     match f(&mut app) {
         Ok(value) => {
@@ -63,7 +76,7 @@ fn with_app<T>(f: impl FnOnce(&mut NativeApp) -> crate::error::Result<T>) -> Res
             dispatch_events(events);
             Ok(value)
         }
-        Err(err) => Err(napi_err(err)),
+        Err(err) => Err(napi_err(env, err)),
     }
 }
 
@@ -141,17 +154,15 @@ fn dispatch_events(events: Vec<Event>) {
     }
 }
 
-#[napi(object, js_name = "DirEnt")]
+#[napi(object, js_name = "DirEnt", use_nullable = true)]
 #[derive(Clone)]
 pub struct JsDirEnt {
     pub name: String,
     pub path: String,
     pub is_dir: bool,
     pub size: i64,
-    #[napi(ts_type = "number | null")]
     pub mtime: Option<i64>,
     pub mode: u32,
-    #[napi(ts_type = "number | undefined")]
     pub archive_offset: Option<i64>,
 }
 
@@ -169,13 +180,11 @@ impl From<DirEnt> for JsDirEnt {
     }
 }
 
-#[napi(object, js_name = "DirPage")]
+#[napi(object, js_name = "DirPage", use_nullable = true)]
 pub struct JsDirPage {
     pub path: String,
     pub entries: Vec<JsDirEnt>,
-    #[napi(ts_type = "string | null")]
     pub next_cursor: Option<String>,
-    #[napi(ts_type = "number | null")]
     pub total_hint: Option<i64>,
 }
 
@@ -190,14 +199,12 @@ impl From<DirPage> for JsDirPage {
     }
 }
 
-#[napi(object, js_name = "FindPage")]
+#[napi(object, js_name = "FindPage", use_nullable = true)]
 pub struct JsFindPage {
     pub pattern: String,
     pub mode: String,
     pub entries: Vec<JsDirEnt>,
-    #[napi(ts_type = "string | null")]
     pub next_cursor: Option<String>,
-    #[napi(ts_type = "number | null")]
     pub total_hint: Option<i64>,
 }
 
@@ -538,12 +545,12 @@ pub struct JobCancelledEvent {
     pub job_id: u32,
 }
 
-#[napi]
-pub fn open(opts: JsOpenOpts) -> Result<JsOpenResult> {
+#[napi(ts_return_type = "{ sessionId: number } | { jobId: number }")]
+pub fn open(env: Env, opts: JsOpenOpts) -> Result<JsOpenResult> {
     let source = opts.source;
-    let policy = parse_policy(&opts.policy).map_err(napi_err)?;
-    let recreate = parse_recreate(&opts.recreate).map_err(napi_err)?;
-    with_app(|app| {
+    let policy = parse_policy(&opts.policy).map_err(|e| napi_err(env, e))?;
+    let recreate = parse_recreate(&opts.recreate).map_err(|e| napi_err(env, e))?;
+    with_app(env, |app| {
         let outcome = app.open(OpenOpts {
             source,
             policy,
@@ -567,13 +574,13 @@ pub fn open(opts: JsOpenOpts) -> Result<JsOpenResult> {
 }
 
 #[napi]
-pub fn close(session_id: u32) -> Result<()> {
-    with_app(|app| app.close(session_id))
+pub fn close(env: Env, session_id: u32) -> Result<()> {
+    with_app(env, |app| app.close(session_id))
 }
 
 #[napi]
-pub fn list(opts: JsListOpts) -> Result<JsDirPage> {
-    with_app(|app| {
+pub fn list(env: Env, opts: JsListOpts) -> Result<JsDirPage> {
+    with_app(env, |app| {
         app.list(ListOpts {
             session_id: opts.session_id,
             path: opts.path,
@@ -585,16 +592,16 @@ pub fn list(opts: JsListOpts) -> Result<JsDirPage> {
 }
 
 #[napi]
-pub fn lookup(opts: JsLookupOpts) -> Result<Option<JsDirEnt>> {
-    with_app(|app| {
+pub fn lookup(env: Env, opts: JsLookupOpts) -> Result<Option<JsDirEnt>> {
+    with_app(env, |app| {
         app.lookup(opts.session_id, &opts.path)
             .map(|ent| ent.map(JsDirEnt::from))
     })
 }
 
 #[napi]
-pub fn find(opts: JsFindOpts) -> Result<JsFindPage> {
-    with_app(|app| {
+pub fn find(env: Env, opts: JsFindOpts) -> Result<JsFindPage> {
+    with_app(env, |app| {
         app.find(FindOpts {
             session_id: opts.session_id,
             pattern: opts.pattern,
@@ -607,8 +614,8 @@ pub fn find(opts: JsFindOpts) -> Result<JsFindPage> {
 }
 
 #[napi]
-pub fn preview(opts: JsPreviewOpts) -> Result<JsPreviewResult> {
-    with_app(|app| {
+pub fn preview(env: Env, opts: JsPreviewOpts) -> Result<JsPreviewResult> {
+    with_app(env, |app| {
         app.preview(opts.session_id, &opts.path)
             .map(|kind| match kind {
                 PreviewKind::Text { text, truncated } => JsPreviewResult {
@@ -628,8 +635,8 @@ pub fn preview(opts: JsPreviewOpts) -> Result<JsPreviewResult> {
 }
 
 #[napi]
-pub fn extract_plan(opts: JsExtractPlanOpts) -> Result<JsExtractPlan> {
-    with_app(|app| {
+pub fn extract_plan(env: Env, opts: JsExtractPlanOpts) -> Result<JsExtractPlan> {
+    with_app(env, |app| {
         app.extract_plan(ExtractPlanOpts {
             session_id: opts.session_id,
             members: opts.members,
@@ -640,8 +647,8 @@ pub fn extract_plan(opts: JsExtractPlanOpts) -> Result<JsExtractPlan> {
 }
 
 #[napi]
-pub fn extract(opts: JsExtractOpts) -> Result<JsJobId> {
-    with_app(|app| {
+pub fn extract(env: Env, opts: JsExtractOpts) -> Result<JsJobId> {
+    with_app(env, |app| {
         app.extract(ExtractOpts {
             session_id: opts.session_id,
             members: opts.members,
@@ -653,8 +660,8 @@ pub fn extract(opts: JsExtractOpts) -> Result<JsJobId> {
 }
 
 #[napi]
-pub fn cancel(job_id: u32) -> Result<()> {
-    with_app(|app| app.cancel(job_id))
+pub fn cancel(env: Env, job_id: u32) -> Result<()> {
+    with_app(env, |app| app.cancel(job_id))
 }
 
 #[napi]
@@ -668,29 +675,29 @@ pub fn pick_dir() -> Option<String> {
 }
 
 #[napi]
-pub fn get_config() -> Result<JsConfig> {
-    with_app(|app| Ok(JsConfig::from(app.get_config())))
+pub fn get_config(env: Env) -> Result<JsConfig> {
+    with_app(env, |app| Ok(JsConfig::from(app.get_config())))
 }
 
 #[napi]
-pub fn set_config(patch: JsConfigPatch) -> Result<JsConfig> {
-    let patch = patch_from_js(patch).map_err(napi_err)?;
-    with_app(|app| app.set_config(patch).map(JsConfig::from))
+pub fn set_config(env: Env, patch: JsConfigPatch) -> Result<JsConfig> {
+    let patch = patch_from_js(patch).map_err(|e| napi_err(env, e))?;
+    with_app(env, |app| app.set_config(patch).map(JsConfig::from))
 }
 
 #[napi]
-pub fn register_associations() -> Result<()> {
-    with_app(|app| app.register_associations())
+pub fn register_associations(env: Env) -> Result<()> {
+    with_app(env, |app| app.register_associations())
 }
 
 #[napi]
-pub fn unregister_associations() -> Result<()> {
-    with_app(|app| app.unregister_associations())
+pub fn unregister_associations(env: Env) -> Result<()> {
+    with_app(env, |app| app.unregister_associations())
 }
 
-#[napi]
-pub fn fuse_mount(session_id: u32) -> Result<JsFuseMountResult> {
-    with_app(|app| {
+#[napi(ts_return_type = "{ mountpoint: string } | { error: string }")]
+pub fn fuse_mount(env: Env, session_id: u32) -> Result<JsFuseMountResult> {
+    with_app(env, |app| {
         app.fuse_mount(session_id).map(|result| match result {
             FuseMountResult::Mountpoint { mountpoint } => JsFuseMountResult {
                 mountpoint: Some(mountpoint),
@@ -705,25 +712,27 @@ pub fn fuse_mount(session_id: u32) -> Result<JsFuseMountResult> {
 }
 
 #[napi]
-pub fn fuse_unmount(session_id: u32) -> Result<()> {
-    with_app(|app| app.fuse_unmount(session_id))
+pub fn fuse_unmount(env: Env, session_id: u32) -> Result<()> {
+    with_app(env, |app| app.fuse_unmount(session_id))
 }
 
 #[napi]
-pub fn http_start(session_id: u32, bind: Option<String>) -> Result<JsHttpStartResult> {
-    with_app(|app| {
+pub fn http_start(env: Env, session_id: u32, bind: Option<String>) -> Result<JsHttpStartResult> {
+    with_app(env, |app| {
         app.http_start(session_id, bind)
             .map(|url| JsHttpStartResult { url })
     })
 }
 
 #[napi]
-pub fn http_stop(session_id: u32) -> Result<()> {
-    with_app(|app| app.http_stop(session_id))
+pub fn http_stop(env: Env, session_id: u32) -> Result<()> {
+    with_app(env, |app| app.http_stop(session_id))
 }
 
-#[napi(ts_args_type = "event: string, callback: (payload: object) => void")]
-pub fn on(event: String, callback: Function<(), ()>) -> Result<()> {
+#[napi(
+    ts_type = "(event: string, callback: (payload: IndexProgressEvent | ExtractProgressEvent | JobSucceededEvent | JobFailedEvent | JobCancelledEvent) => void): void"
+)]
+pub fn on(env: Env, event: String, callback: Function<(), ()>) -> Result<()> {
     let mut listeners = js_listeners()
         .lock()
         .expect("native event listeners mutex poisoned");
@@ -764,7 +773,10 @@ pub fn on(event: String, callback: Function<(), ()>) -> Result<()> {
             listeners.job_cancelled.push(tsfn);
         }
         other => {
-            return Err(Error::from_reason(format!("unknown event '{other}'")));
+            return Err(napi_err(
+                env,
+                ApiError::internal(format!("unknown event '{other}'")),
+            ));
         }
     }
     Ok(())

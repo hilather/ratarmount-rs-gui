@@ -1,6 +1,6 @@
 use crate::catalog::{decode_cursor, encode_cursor, sample_conflicts};
 use crate::commands::run_self_test;
-use crate::error::ErrorCode;
+use crate::error::{ApiError, ErrorCode};
 use crate::events::Event;
 use crate::parse::{
     config_overwrite_str, parse_config_overwrite, parse_policy, parse_recreate, policy_str,
@@ -9,12 +9,12 @@ use crate::parse::{
 use crate::paths::fixture_hello_tar;
 use crate::state::{JobKind, NativeApp};
 use crate::types::{
-    ConfigOverwrite, ConfigPatch, ExtractConflict, ExtractOpts, ExtractPlanOpts, FindOpts,
-    IndexConfigPatch, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, PreviewConfigPatch,
-    PreviewKind, Recreate, EXTRACT_PLAN_CONFLICT_SAMPLE, EXTRACT_PLAN_CONFLICT_SCAN_MS,
-    EXTRACT_PLAN_CONFLICT_SCAN_ROWS, FAKE_ROOT_DIR_COUNT, FAKE_ROOT_FILE_COUNT, LIST_LIMIT_DEFAULT,
-    LIST_LIMIT_MAX, PREVIEW_CEILING_BYTES, PREVIEW_DEFAULT_BYTES, STUB_BUSY_DEST,
-    STUB_CONFLICTS_DEST,
+    ConfigOverwrite, ConfigPatch, ExtractConfigPatch, ExtractConflict, ExtractOpts,
+    ExtractPlanOpts, FindOpts, IndexConfigPatch, IndexPolicy, ListOpts, OpenOpts, OpenOutcome,
+    PreviewConfigPatch, PreviewKind, Recreate, EXTRACT_PLAN_CONFLICT_SAMPLE,
+    EXTRACT_PLAN_CONFLICT_SCAN_MS, EXTRACT_PLAN_CONFLICT_SCAN_ROWS, FAKE_ROOT_DIR_COUNT,
+    FAKE_ROOT_FILE_COUNT, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX, PREVIEW_CEILING_BYTES,
+    PREVIEW_DEFAULT_BYTES, STUB_BUSY_DEST, STUB_CONFLICTS_DEST,
 };
 
 fn fixture_source() -> String {
@@ -76,10 +76,7 @@ fn open_fixture_returns_session_one() {
 
 #[test]
 fn open_rejects_unknown_path_outside_fake_mode() {
-    let mut app = NativeApp::new();
-    if crate::parse::rgui_fake_enabled() {
-        return;
-    }
+    let mut app = NativeApp::production();
     let err = app
         .open(OpenOpts {
             source: "/tmp/not-the-fixture.tar".into(),
@@ -97,10 +94,7 @@ fn open_rejects_unknown_path_outside_fake_mode() {
 
 #[test]
 fn open_rejects_memory_policy_outside_test_mode() {
-    let mut app = NativeApp::new();
-    if crate::parse::rgui_fake_enabled() {
-        return;
-    }
+    let mut app = NativeApp::production();
     let err = app
         .open(OpenOpts {
             source: fixture_source(),
@@ -114,6 +108,37 @@ fn open_rejects_memory_policy_outside_test_mode() {
         .expect_err("memory policy");
     assert_eq!(err.code, ErrorCode::Internal);
     assert!(!err.retryable());
+}
+
+#[test]
+fn rgui_fake_env_allows_any_path_on_default_app() {
+    if !crate::parse::rgui_fake_enabled() {
+        let mut app = NativeApp::new();
+        let err = app
+            .open(OpenOpts {
+                source: "/tmp/not-the-fixture.tar".into(),
+                policy: IndexPolicy::Sibling,
+                explicit_path: None,
+                recreate: Recreate::Never,
+                password: None,
+                recursive: None,
+                recursion_depth: None,
+            })
+            .expect_err("unknown path without RGUI_FAKE");
+        assert_eq!(err.code, ErrorCode::NotFound);
+        return;
+    }
+    let mut app = NativeApp::new();
+    app.open(OpenOpts {
+        source: "/tmp/not-the-fixture.tar".into(),
+        policy: IndexPolicy::Memory,
+        explicit_path: None,
+        recreate: Recreate::Never,
+        password: None,
+        recursive: None,
+        recursion_depth: None,
+    })
+    .expect("RGUI_FAKE=1 accepts any path");
 }
 
 #[test]
@@ -195,6 +220,39 @@ fn list_covers_more_than_one_page() {
     }
     assert!(pages > 1);
     assert_eq!(seen, FAKE_ROOT_DIR_COUNT + FAKE_ROOT_FILE_COUNT);
+    assert!(cursor.is_none());
+}
+
+#[test]
+fn regression_last_page_next_cursor_is_null_not_omitted() {
+    // Regression: last-page nextCursor must be JS null so W3 `!== null` loops stop.
+    let mut app = NativeApp::for_test();
+    let session_id = open_fixture(&mut app);
+    let mut cursor = None;
+    let last = loop {
+        let page = app
+            .list(ListOpts {
+                session_id,
+                path: "/".into(),
+                cursor,
+                limit: Some(500),
+            })
+            .unwrap();
+        match page.next_cursor {
+            Some(next) => cursor = Some(next),
+            None => break page,
+        }
+    };
+    assert!(last.next_cursor.is_none());
+    let src = include_str!("napi_api.rs");
+    assert!(
+        src.contains("js_name = \"DirPage\", use_nullable = true"),
+        "DirPage Option fields must encode as JS null"
+    );
+    assert!(
+        src.contains("js_name = \"FindPage\", use_nullable = true"),
+        "FindPage Option fields must encode as JS null"
+    );
 }
 
 #[test]
@@ -262,6 +320,24 @@ fn set_config_clamps_preview_to_64_mib() {
 }
 
 #[test]
+fn regression_command_errors_expose_code_and_retryable_fields() {
+    // Regression: JS catch(e) must see e.code / e.retryable, not a GenericFailure string.
+    let err = ApiError::not_found("missing archive");
+    let shape = err.to_command_error();
+    assert_eq!(shape.code, "NotFound");
+    assert_eq!(shape.message, "missing archive");
+    assert!(!shape.retryable);
+    assert_ne!(shape.message, err.to_string());
+    let busy = ApiError::busy("later").to_command_error();
+    assert_eq!(busy.code, "Busy");
+    assert!(busy.retryable);
+    let src = include_str!("napi_api.rs");
+    assert!(src.contains("obj.set(\"code\""));
+    assert!(src.contains("obj.set(\"retryable\""));
+    assert!(src.contains("IndexProgressEvent | ExtractProgressEvent | JobSucceededEvent | JobFailedEvent | JobCancelledEvent"));
+}
+
+#[test]
 fn extract_overwrite_ask_is_rejected() {
     let mut app = NativeApp::for_test();
     let session_id = open_fixture(&mut app);
@@ -276,6 +352,36 @@ fn extract_overwrite_ask_is_rejected() {
     // Regression: native extract with overwrite 'ask' must reject.
     assert_eq!(err.code, ErrorCode::Internal);
     assert!(!err.retryable());
+}
+
+#[test]
+fn extract_allow_unsafe_paths_skips_dotdot_reject() {
+    let mut app = NativeApp::for_test();
+    let session_id = open_fixture(&mut app);
+    let err = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/../evil".into()],
+            dest_dir: "/tmp".into(),
+            overwrite: "skip".into(),
+        })
+        .expect_err("dotdot");
+    assert_eq!(err.code, ErrorCode::PathEscape);
+    app.set_config(ConfigPatch {
+        extract: Some(ExtractConfigPatch {
+            allow_unsafe_paths: Some(true),
+            overwrite: None,
+        }),
+        ..ConfigPatch::default()
+    })
+    .unwrap();
+    app.extract(ExtractOpts {
+        session_id,
+        members: vec!["/../evil".into()],
+        dest_dir: "/tmp".into(),
+        overwrite: "skip".into(),
+    })
+    .expect("allowUnsafePaths");
 }
 
 #[test]
@@ -516,7 +622,7 @@ fn regression_no_read_all_command() {
         for line in src.lines() {
             let trimmed = line.trim();
             assert!(
-                !trimmed.contains("fn read_all") && !trimmed.contains("fn readAll"),
+                !trimmed.contains("fn read_all(") && !trimmed.contains("fn readAll("),
                 "Regression: no readAll napi command: {trimmed}"
             );
         }

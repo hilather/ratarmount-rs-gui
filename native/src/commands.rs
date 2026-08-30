@@ -2,7 +2,9 @@ use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, page_names, samp
 use crate::error::{ApiError, ErrorCode, Result};
 use crate::events::Event;
 use crate::parse::parse_native_overwrite;
-use crate::paths::{discard_secret, is_fixture_source, normalize_archive_path};
+use crate::paths::{
+    discard_secret, is_fixture_source, normalize_archive_path, normalize_member_path,
+};
 use crate::state::{JobKind, JobStatus, NativeApp};
 use crate::types::{
     Config, ConfigPatch, DirEnt, DirPage, ExtractConflict, ExtractOpts, ExtractPlan,
@@ -132,8 +134,9 @@ impl NativeApp {
 
     pub fn extract_plan(&self, opts: ExtractPlanOpts) -> Result<ExtractPlan> {
         let session = self.session(opts.session_id)?;
+        let allow_dotdot = self.config.extract.allow_unsafe_paths;
         for member in &opts.members {
-            let _ = normalize_archive_path(member)?;
+            let _ = normalize_member_path(member, allow_dotdot)?;
         }
         let (files, bytes) = session.catalog.totals(&opts.members);
         let (conflicts, truncated, conflict_count) = if opts.dest_dir == STUB_CONFLICTS_DEST {
@@ -163,15 +166,9 @@ impl NativeApp {
         let _overwrite = parse_native_overwrite(&opts.overwrite)?;
         let session_id = opts.session_id;
         let _ = self.session(session_id)?;
+        let allow_dotdot = self.config.extract.allow_unsafe_paths;
         for member in &opts.members {
-            let _ = normalize_archive_path(member)?;
-        }
-        if !self.config.extract.allow_unsafe_paths {
-            for member in &opts.members {
-                if member.split('/').any(|s| s == "..") {
-                    return Err(ApiError::path_escape(member.clone()));
-                }
-            }
+            let _ = normalize_member_path(member, allow_dotdot)?;
         }
 
         let job_id = self.alloc_job(JobKind::Extract, Some(session_id));

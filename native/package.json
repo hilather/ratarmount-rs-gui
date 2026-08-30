@@ -6,7 +6,8 @@
   "main": "index.js",
   "types": "index.d.ts",
   "napi": {
-    "binaryName": "ratarmount-native"
+    "binaryName": "ratarmount-native",
+    "dtsCache": false
   },
   "scripts": {
     "build": "napi build --platform --esm --features napi-addon",

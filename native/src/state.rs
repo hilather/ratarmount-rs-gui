@@ -50,6 +50,7 @@ impl JobState {
 
 pub struct NativeApp {
     pub(crate) test_mode: bool,
+    pub(crate) honor_rgui_fake: bool,
     pub(crate) sessions: HashMap<u32, SessionState>,
     pub(crate) jobs: HashMap<u32, JobState>,
     pub(crate) next_session_id: u32,
@@ -60,16 +61,22 @@ pub struct NativeApp {
 
 impl NativeApp {
     pub fn new() -> Self {
-        Self::with_test_mode(false)
+        Self::with_flags(false, true)
     }
 
     pub fn for_test() -> Self {
-        Self::with_test_mode(true)
+        Self::with_flags(true, true)
     }
 
-    fn with_test_mode(test_mode: bool) -> Self {
+    /// Production guards even if this process has `RGUI_FAKE=1`.
+    pub fn production() -> Self {
+        Self::with_flags(false, false)
+    }
+
+    fn with_flags(test_mode: bool, honor_rgui_fake: bool) -> Self {
         Self {
             test_mode,
+            honor_rgui_fake,
             sessions: HashMap::new(),
             jobs: HashMap::new(),
             next_session_id: 1,
@@ -80,7 +87,7 @@ impl NativeApp {
     }
 
     pub fn fake_or_test(&self) -> bool {
-        self.test_mode || rgui_fake_enabled()
+        self.test_mode || (self.honor_rgui_fake && rgui_fake_enabled())
     }
 
     pub fn events(&self) -> &[Event] {

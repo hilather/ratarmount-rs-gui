@@ -60,6 +60,15 @@ impl ApiError {
         self.code.retryable()
     }
 
+    /// JS command-error payload (`jobFailed` minus `jobId`).
+    pub fn to_command_error(&self) -> CommandError {
+        CommandError {
+            code: self.code.as_str().to_string(),
+            message: self.message.clone(),
+            retryable: self.retryable(),
+        }
+    }
+
     pub fn not_found(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotFound, message)
     }
@@ -90,3 +99,11 @@ impl fmt::Display for ApiError {
 }
 
 impl std::error::Error for ApiError {}
+
+/// Thrown to JS as Error fields `{ code, message, retryable }`.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CommandError {
+    pub code: String,
+    pub message: String,
+    pub retryable: bool,
+}
