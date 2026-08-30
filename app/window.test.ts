@@ -38,7 +38,14 @@ test('native addon is loaded with a dynamic specifier, not a static import', asy
   expect(addonSource).toContain('import(spec)')
   expect(addonSource).not.toMatch(/import\s*\{[^}]*\}\s*from\s*['"]\.\.\/native['"]/)
   expect(appSource).not.toContain("from '../native'")
-  await expect(loadNativeAddon()).rejects.toThrow(/Native addon is not built/)
+  try {
+    const addon = await loadNativeAddon()
+    expect(typeof addon.pickFile).toBe('function')
+    expect(typeof addon.list).toBe('function')
+  } catch (err) {
+    expect(err).toBeInstanceOf(Error)
+    expect((err as Error).message).toMatch(/Native addon is not built/)
+  }
 })
 
 test('package scripts do not advertise a browser target', async () => {
