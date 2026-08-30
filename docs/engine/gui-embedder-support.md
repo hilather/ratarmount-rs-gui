@@ -1,8 +1,8 @@
 # GUI embedder support — snapshot
 
-> **Working copy (2026-08-29):** this file is the **only** copy of the G0–G7 task list today. It has **not** been dropped into the sibling engine checkout (`ratarmount-rs/docs/tasks/` has no `gui-embedder-support.md` yet).
+> **Working copy (2026-08-29):** the engine checkout has `docs/tasks/gui-embedder-support.md` (doc drop only; G0–G2 / `ratarmount-session` are still missing). Until that crate/API exists, GUI and engine agents treat **this snapshot** as the working G-list.
 >
-> **Canonical once merged:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` ([hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs)). That drop is an **external engine PR**, not a GUI PR. Until it lands, GUI and engine agents treat **this snapshot** as the working G-list.
+> **Canonical once G0–G2 land:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` ([hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs)). That work is an **external engine PR**, not a GUI PR. After the crate exists, the engine file wins on drift.
 >
 > Implement G0–G7 in **ratarmount-rs**. Do not paste GPUI / napi code into the engine repo. After the engine file exists, it wins on drift.
 

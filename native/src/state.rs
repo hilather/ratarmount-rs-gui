@@ -153,19 +153,24 @@ impl NativeApp {
         id
     }
 
-    pub(crate) fn alloc_job(&mut self, kind: JobKind, session_id: Option<u32>) -> u32 {
+    pub(crate) fn alloc_job(
+        &mut self,
+        kind: JobKind,
+        session_id: Option<u32>,
+    ) -> (u32, Arc<AtomicBool>) {
         let id = self.next_job_id;
         self.next_job_id = self.next_job_id.saturating_add(1);
+        let cancel = Arc::new(AtomicBool::new(false));
         self.jobs.insert(
             id,
             JobState {
                 kind,
                 status: JobStatus::Running,
                 session_id,
-                cancel: Arc::new(AtomicBool::new(false)),
+                cancel: cancel.clone(),
             },
         );
-        id
+        (id, cancel)
     }
 }
 

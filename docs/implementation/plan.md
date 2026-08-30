@@ -4,7 +4,7 @@ This is the **first-class** plan an orchestrator hands to waves of subagents. Po
 
 **Do not** scaffold `app/` or wire `native/` except as W0/W1. Engine G0–G7 are **external** (ratarmount-rs), not PRs in this repository.
 
-The G0–G7 task list **working copy** is [`../engine/gui-embedder-support.md`](../engine/gui-embedder-support.md) until an **external engine PR** copies it to `ratarmount-rs/docs/tasks/gui-embedder-support.md` (not in the engine tree as of 2026-08-29).
+The G0–G7 task list **working copy** is [`../engine/gui-embedder-support.md`](../engine/gui-embedder-support.md). The engine tree has `docs/tasks/gui-embedder-support.md` (doc drop as of 2026-08-29) but no `ratarmount-session` crate; until G0–G2 land, this snapshot is the working G-list.
 
 ## Hard rules (every wave)
 
@@ -271,7 +271,7 @@ Do **not** treat the wave checklist as the only source of truth for “done” �
 | PR 8 | W7 | PR 7 | engine release assets |
 | PR 9 | W8 | PR 6, PR 7 | G3 find; G5.4 HTTP optional |
 
-External (not a GUI PR): copy `docs/engine/gui-embedder-support.md` into `ratarmount-rs/docs/tasks/gui-embedder-support.md` (G0.1). Until that lands, this snapshot is the working G-list.
+External (not a GUI PR): G0.1 doc drop is in `ratarmount-rs/docs/tasks/gui-embedder-support.md`; G0–G2 / `ratarmount-session` are still missing. Until the crate/API lands, this snapshot is the working G-list.
 
 - Engine G-phases appear in PR **Description** as gates. Do not open G-phase PRs in this repository.
 - PR 1 must **not** rewrite architecture docs (already seeded).

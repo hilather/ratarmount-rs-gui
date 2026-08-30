@@ -32,6 +32,8 @@ pub struct OpenRequest {
     pub recursive: bool,
     pub recursion_depth: Option<u32>,
     pub recreate: Recreate,
+    /// TODO(engine): map to engine Secret; discard after the engine call.
+    pub password: Option<String>,
 }
 
 #[allow(dead_code)]
@@ -59,9 +61,10 @@ impl IndexJob {
         Self { cancel }
     }
 
-    pub fn start(_req: OpenRequest, cancel: Arc<AtomicBool>) -> Result<Self> {
+    pub fn start(mut req: OpenRequest, cancel: Arc<AtomicBool>) -> Result<Self> {
         // TODO(engine): IndexJob::start (G2.1) + progress channel (G2.2).
-        let _ = cancel;
+        discard_secret(req.password.take());
+        let _ = (req, cancel);
         Err(engine_unavailable("IndexJob::start"))
     }
 
@@ -82,7 +85,7 @@ pub struct EngineSession {
 impl EngineSession {
     pub fn open(req: &OpenRequest) -> Result<Self> {
         let _ = req;
-        // TODO(engine): Session::open (G1.1). Pin git tag + default-features = false.
+        // TODO(engine): Session::open
         Err(engine_unavailable("Session::open"))
     }
 
@@ -175,16 +178,16 @@ pub fn index_progress_event(job_id: u32, progress: &IndexProgress) -> Event {
 }
 
 pub fn open_real(app: &mut NativeApp, opts: OpenOpts) -> Result<OpenOutcome> {
-    discard_secret(opts.password);
     let source = opts.source;
     if !Path::new(&source).is_file() {
+        discard_secret(opts.password);
         return Err(ApiError::not_found(format!("unknown archive: {source}")));
     }
 
     let displayed = unresolved_index_display(opts.policy, &source, opts.explicit_path.as_deref());
     app.last_index_debug_log = Some(debug_log_resolved_index_path(&displayed));
 
-    let request = OpenRequest {
+    let mut request = OpenRequest {
         source,
         policy: opts.policy,
         explicit_path: opts.explicit_path,
@@ -192,29 +195,28 @@ pub fn open_real(app: &mut NativeApp, opts: OpenOpts) -> Result<OpenOutcome> {
         recursive: opts.recursive.unwrap_or(false),
         recursion_depth: opts.recursion_depth,
         recreate: opts.recreate,
+        password: opts.password,
     };
 
     match opts.recreate {
-        Recreate::Never => match EngineSession::open(&request) {
-            Ok(session) => {
-                // TODO(engine): store Arc<Session> in the handle table (do not use FakeCatalog).
-                session.close();
-                Err(engine_unavailable("Session handle table"))
+        Recreate::Never => {
+            let result = EngineSession::open(&request);
+            discard_secret(request.password.take());
+            match result {
+                Ok(session) => {
+                    // TODO(engine): store Arc<Session> in the handle table (do not use FakeCatalog).
+                    session.close();
+                    Err(engine_unavailable("Session handle table"))
+                }
+                Err(err) => Err(err),
             }
-            Err(err) => Err(err),
-        },
+        }
         Recreate::IfInvalid | Recreate::Always => start_index_job(app, request),
     }
 }
 
 fn start_index_job(app: &mut NativeApp, request: OpenRequest) -> Result<OpenOutcome> {
-    let job_id = app.alloc_job(JobKind::Index, None);
-    let cancel = app
-        .jobs
-        .get(&job_id)
-        .expect("job just allocated")
-        .cancel
-        .clone();
+    let (job_id, cancel) = app.alloc_job(JobKind::Index, None);
     let err = match IndexJob::start(request, cancel) {
         Ok(job) => {
             if job.is_cancelled() {

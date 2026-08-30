@@ -46,7 +46,7 @@ Root `README.md` is a high-level landing page. It must **not** contain wave boar
 
 The **native crate** owns path validation, the preview cap, and the handle table. React must not see archive bytes. Preview hard ceiling is **64 MiB in native** even if the user types a larger number.
 
-If blocked on the engine API, implement against the G0 sketch in [docs/engine/gui-embedder-support.md](docs/engine/gui-embedder-support.md) and leave `TODO(engine)`. That snapshot is the **working** G-list until an **external engine PR** copies it to `ratarmount-rs/docs/tasks/gui-embedder-support.md` (not present in the engine tree as of 2026-08-29). After that merge, the engine file is canonical.
+If blocked on the engine API, implement against the G0 sketch in [docs/engine/gui-embedder-support.md](docs/engine/gui-embedder-support.md) and leave `TODO(engine)`. The engine tree has `docs/tasks/gui-embedder-support.md` (doc drop as of 2026-08-29) but no `ratarmount-session` crate yet. Until G0–G2 land, this snapshot is the working G-list; after the crate/API exists, the engine file is canonical.
 
 ## Tests for every fix (non-negotiable)
 

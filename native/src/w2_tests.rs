@@ -12,7 +12,7 @@ use crate::session::{
     ExtractRequest, IndexJob, IndexProgress, OpenRequest, INDEX_DEBUG_PREFIX,
 };
 use crate::state::{JobKind, NativeApp};
-use crate::types::{ExtractOpts, IndexPolicy, OpenOpts, OpenOutcome, Recreate};
+use crate::types::{ExtractOpts, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, Recreate};
 use crate::ustar_fixture::{
     count_ustar_regular_files, member_body, member_name, write_thousand_member_tar, write_ustar,
     THOUSAND_MEMBER_COUNT, THOUSAND_PAGE_SIZE,
@@ -61,6 +61,7 @@ fn open_request(source: &Path) -> OpenRequest {
         recursive: false,
         recursion_depth: None,
         recreate: Recreate::Never,
+        password: None,
     }
 }
 
@@ -181,6 +182,7 @@ fn extract_one_file_to_temp_dir_from_rust() {
 fn extract_to_takes_dest_dir_not_member_bytes() {
     let src = include_str!("session.rs");
     assert!(src.contains("pub dest_dir: PathBuf"));
+    assert!(src.contains("pub password: Option<String>"));
     assert!(src.contains("pub fn extract_to"));
     assert!(!src.contains("-> Vec<u8>"));
     assert!(!src.contains("fn read_all(") && !src.contains("fn readAll("));
@@ -189,28 +191,44 @@ fn extract_to_takes_dest_dir_not_member_bytes() {
 #[test]
 fn production_open_never_is_engine_todo() {
     let mut app = NativeApp::production();
-    let err = app
-        .open(OpenOpts {
-            source: crate::paths::fixture_hello_tar()
-                .to_string_lossy()
-                .into_owned(),
-            policy: IndexPolicy::Sibling,
-            explicit_path: None,
-            recreate: Recreate::Never,
-            password: None,
-            recursive: None,
-            recursion_depth: None,
-        })
-        .expect_err("engine Session::open");
-    if session_feature_enabled() {
-        panic!("feature `session` is enabled; production open(never) must succeed via Session");
-    }
-    assert_engine_todo(&err, "Session::open");
-    let log = app.last_index_debug_log().expect("index debug log");
+    const SECRET: &str = "s3cret-w2";
+    let outcome = app.open(OpenOpts {
+        source: crate::paths::fixture_hello_tar()
+            .to_string_lossy()
+            .into_owned(),
+        policy: IndexPolicy::Sibling,
+        explicit_path: None,
+        recreate: Recreate::Never,
+        password: Some(SECRET.into()),
+        recursive: None,
+        recursion_depth: None,
+    });
+    let log = app
+        .last_index_debug_log()
+        .expect("index debug log")
+        .to_string();
     assert!(log.starts_with(INDEX_DEBUG_PREFIX));
-    assert!(log.contains("TODO(engine)"));
-    assert!(log.contains("resolve_index"));
-    assert!(!log.contains("local-index-v1"));
+    assert!(!log.contains(SECRET));
+    let cfg = format!("{:?}", app.get_config());
+    assert!(!cfg.contains(SECRET));
+    match outcome {
+        Ok(OpenOutcome::Session { session_id }) => {
+            assert!(app.has_session(session_id));
+        }
+        Ok(OpenOutcome::Job { job_id }) => {
+            panic!("open(never) returned job {job_id}; expected a session");
+        }
+        Err(err) => {
+            assert!(
+                !session_feature_enabled(),
+                "feature `session` is enabled; production open(never) must succeed via Session. got {err}"
+            );
+            assert_engine_todo(&err, "Session::open");
+            assert!(log.contains("TODO(engine)"));
+            assert!(log.contains("resolve_index"));
+            assert!(!log.contains("local-index-v1"));
+        }
+    }
 }
 
 #[test]
@@ -230,22 +248,33 @@ fn production_open_if_invalid_starts_index_job_then_fails_todo() {
         })
         .expect("job id");
     if session_feature_enabled() {
-        match outcome {
-            OpenOutcome::Session { .. } => {}
+        let session_id = match outcome {
+            OpenOutcome::Session { session_id } => session_id,
             OpenOutcome::Job { job_id } => {
                 let events = app.take_events();
-                assert!(
-                    events.iter().any(|e| matches!(
-                        e,
-                        Event::JobSucceeded {
-                            job_id: id,
-                            session_id: Some(_)
-                        } if *id == job_id
-                    )),
-                    "session feature: IndexJob must succeed, got {events:?}"
-                );
+                let session_id = events.iter().find_map(|e| match e {
+                    Event::JobSucceeded {
+                        job_id: id,
+                        session_id: Some(session_id),
+                    } if *id == job_id => Some(*session_id),
+                    _ => None,
+                });
+                session_id.unwrap_or_else(|| {
+                    panic!("session feature: IndexJob must succeed with a session, got {events:?}")
+                })
             }
-        }
+        };
+        assert!(app.has_session(session_id));
+        let page = app
+            .list(ListOpts {
+                session_id,
+                path: "/".into(),
+                cursor: None,
+                limit: Some(THOUSAND_PAGE_SIZE),
+            })
+            .expect("list after if-invalid open");
+        assert_eq!(page.entries.len(), THOUSAND_PAGE_SIZE as usize);
+        assert_eq!(page.entries[0].name, member_name(0));
         return;
     }
     let OpenOutcome::Job { job_id } = outcome else {
@@ -273,7 +302,7 @@ fn production_open_if_invalid_starts_index_job_then_fails_todo() {
 #[test]
 fn cancel_sets_job_token() {
     let mut app = NativeApp::production();
-    let job_id = app.alloc_job(JobKind::Index, None);
+    let (job_id, _) = app.alloc_job(JobKind::Index, None);
     assert!(!app.job_cancel_requested(job_id));
     app.cancel(job_id).unwrap();
     assert!(app.job_cancel_requested(job_id));
