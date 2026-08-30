@@ -21,8 +21,8 @@ use crate::types::{
     Config, ConfigPatch, DirEnt, DirPage, ExtractConflict, ExtractOpts, ExtractPlan,
     ExtractPlanOpts, FindOpts, FindPage, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, Overwrite,
     PreviewKind, Recreate, EXTRACT_PLAN_CONFLICT_SAMPLE, EXTRACT_PLAN_CONFLICT_SCAN_MS,
-    EXTRACT_PLAN_CONFLICT_SCAN_ROWS, FAKE_ENCRYPTED_PASSWORD, PREVIEW_CEILING_BYTES,
-    STUB_BUSY_DEST, STUB_CONFLICTS_DEST, STUB_HOLD_DEST,
+    EXTRACT_PLAN_CONFLICT_SCAN_ROWS, FAKE_ENCRYPTED_PASSWORD, STUB_BUSY_DEST, STUB_CONFLICTS_DEST,
+    STUB_HOLD_DEST,
 };
 
 impl NativeApp {

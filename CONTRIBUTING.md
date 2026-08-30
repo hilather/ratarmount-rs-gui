@@ -33,7 +33,7 @@ cargo fmt --all
 cargo clippy -p native --all-targets -- -D warnings
 cargo clippy -p native --lib --features napi-addon -- -D warnings
 cargo test -p native
-(cd app && bun test)
+(cd app && bun run typecheck && bun test)
 ```
 
 ## Review

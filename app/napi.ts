@@ -113,7 +113,6 @@ export interface ExtractProgressEvent {
 }
 
 export type NativeOverwrite = 'skip' | 'replace'
-export type ConfigOverwrite = 'ask' | 'skip' | 'replace'
 
 export interface ExtractConflict {
   member: string
@@ -149,17 +148,6 @@ export interface ExtractOpts {
   members: string[]
   destDir: string
   overwrite: NativeOverwrite
-}
-
-export interface Config {
-  extract: {
-    overwrite: ConfigOverwrite
-    allowUnsafePaths: boolean
-  }
-  preview: {
-    maxBytes: number
-    openLargeWithSystem: boolean
-  }
 }
 
 export class CommandError extends Error {
@@ -363,27 +351,6 @@ export function normalizePreview(raw: unknown): PreviewResult {
     return { kind: 'skipped', reason }
   }
   return { kind: 'skipped', reason: 'unknown' }
-}
-
-export function normalizeConfig(raw: unknown): Config {
-  const obj = (raw ?? {}) as Record<string, unknown>
-  const extract = (pick(obj, 'extract', 'extract') ?? {}) as Record<string, unknown>
-  const preview = (pick(obj, 'preview', 'preview') ?? {}) as Record<string, unknown>
-  const overwriteRaw = String(pick(extract, 'overwrite', 'overwrite') ?? 'ask')
-  const overwrite: ConfigOverwrite =
-    overwriteRaw === 'skip' || overwriteRaw === 'replace' || overwriteRaw === 'ask'
-      ? overwriteRaw
-      : 'ask'
-  return {
-    extract: {
-      overwrite,
-      allowUnsafePaths: Boolean(pick(extract, 'allowUnsafePaths', 'allow_unsafe_paths')),
-    },
-    preview: {
-      maxBytes: asNumber(pick(preview, 'maxBytes', 'max_bytes')) ?? 8 * 1024 * 1024,
-      openLargeWithSystem: pick(preview, 'openLargeWithSystem', 'open_large_with_system') !== false,
-    },
-  }
 }
 
 function normalizeJobId(raw: unknown): { jobId: JobId } {
@@ -622,7 +589,12 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
       }
     },
     async clearLocalIndexCache() {
+      try {
         return normalizeCacheClear(await Promise.resolve(clearCacheFn()))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
     on(event, cb) {
       try {
         onFn(event, (payload: unknown) => {

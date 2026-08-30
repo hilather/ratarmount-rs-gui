@@ -70,13 +70,16 @@ When you fix a **new** production bug, **add a row** here and ship the test in t
 |---------------|----------|
 | Command errors thrown as GenericFailure string | `cargo test -p native regression_command_errors_expose_code_and_retryable_fields` |
 | Last-page `nextCursor` omitted (W3 infinite list) | `cargo test -p native regression_last_page_next_cursor_is_null_not_omitted` |
+| Invalid TypeScript crashed `bun test` (exit 139) instead of failing tsc | `cd app && bun test ci-workflow.test.ts`; CI runs `bun run typecheck` before `bun test` |
+| Unused `PREVIEW_CEILING_BYTES` import failed clippy `-D warnings` | `cargo clippy -p native --all-targets -- -D warnings` |
 
 ## CI is mandatory
 
 - Do not skip, weaken, or mark optional a failing check to go green.
 - Treat every CI failure as a product defect or a pipeline defect.
 - Native: `cargo fmt --all` (or `-p native` when scoped) then clippy `-D warnings` then tests.
-- UI: the GPUIX/Bun test target W0 introduces; do not add a browser/Wasm CI job as the app path.
+- UI: `bun run typecheck` **before** `bun test`. Invalid TypeScript must fail tsc; do not let Bun parse it first (Bun 1.4.0 can exit 139 on broken TS). Do not add a browser/Wasm CI job as the app path.
+- Reject leftover git conflict markers (`<<<<<<<`) in CI. Line-union conflict resolution during stack assembly is not a valid TypeScript merge.
 - A task is incomplete until relevant local and CI-equivalent targets pass.
 
 Before every commit:
@@ -86,7 +89,7 @@ cargo fmt --all
 cargo clippy -p native --all-targets -- -D warnings
 cargo clippy -p native --lib --features napi-addon -- -D warnings
 cargo test -p native
-(cd app && bun test)
+(cd app && bun run typecheck && bun test)
 ```
 
 Do **not** push code that fails `cargo fmt --check`.

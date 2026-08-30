@@ -49,6 +49,9 @@ export type ExplorerHandlers = {
   onDismissDialog(): void
   onPasswordSubmit(password: string): void
   onExtractOpenSystem(): void
+  onSiblingUseCache(): void
+  onSiblingCancel(): void
+  onSiblingRemember(): void
 }
 
 function modsFrom(event: EventPayload): ClickMods {
@@ -57,9 +60,6 @@ function modsFrom(event: EventPayload): ClickMods {
     ctrl: event.modifiers?.ctrl,
     cmd: event.modifiers?.cmd,
   }
-  onSiblingUseCache(): void
-  onSiblingCancel(): void
-  onSiblingRemember(): void
 }
 
 export function explorerHandlers(
@@ -78,6 +78,7 @@ export function explorerHandlers(
     },
     onExtractAll: () => {
       void controller.extractAllTo()
+    },
     onSettings: () => {
       options.onSettings?.()
     },
@@ -120,10 +121,13 @@ export function explorerHandlers(
     },
     onExtractOpenSystem: () => {
       void controller.extractOpenWithSystem()
+    },
     onSiblingUseCache: () => {
       void controller.confirmSiblingUseCache()
+    },
     onSiblingCancel: () => {
       controller.cancelSiblingDialog()
+    },
     onSiblingRemember: () => {
       controller.toggleSiblingRemember()
     },
@@ -216,6 +220,8 @@ export function ExplorerView({
           label="Extract all"
           onClick={onExtractAll}
           disabled={!model.nativeReady || !hasSession || model.status === 'opening'}
+        />
+        <ToolButton
           testId="settings"
           label="Settings"
           onClick={onSettings}
@@ -308,6 +314,9 @@ export function ExplorerView({
           onOverwriteReplace={onOverwriteReplace}
           onDismissDialog={onDismissDialog}
           onPasswordSubmit={onPasswordSubmit}
+        />
+      ) : null}
+
       {model.siblingDialog ? (
         <SiblingDialog
           remember={model.siblingDialog.remember}

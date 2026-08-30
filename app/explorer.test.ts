@@ -307,7 +307,8 @@ test('W4 source does not call readAll and does not pass overwrite ask', async ()
   for (const file of files) {
     const source = await Bun.file(new URL(`./${file}`, import.meta.url)).text()
     expect(source).not.toMatch(/\breadAll\s*\(/)
-    expect(source).not.toMatch(/overwrite:\s*['"]ask['"]/)
+    // config.extract.overwrite may be 'ask'; extract() must not send that to native.
+    expect(source).not.toMatch(/\bextract\s*\(\s*\{[\s\S]*?overwrite:\s*['"]ask['"]/)
   }
   const explorer = await Bun.file(new URL('./explorer.ts', import.meta.url)).text()
   expect(explorer).toMatch(/\bextractPlan\s*\(/)
@@ -508,6 +509,27 @@ test('remember-volume checkbox persists the archive parent', async () => {
   await waitFor(controller, (s) => s.status === 'ready')
   expect(fake.config.index.rememberUnwritableVolumes).toBe(true)
   expect(fake.config.index.rememberedVolumes).toContain('/archives')
+})
+
+test('remembered volume shows user-cache badge on the next sibling-policy open', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/hello.tar' })
+  await fake.setConfig({
+    index: {
+      policy: 'sibling',
+      rememberUnwritableVolumes: true,
+      rememberedVolumes: ['/archives'],
+    },
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  expect(fake.openCalls[0]?.policy).toBe('user-cache')
+  expect(controller.getSnapshot().policy).toBe('user-cache')
+  expect(controller.getSnapshot().indexPath).toBe('user cache')
+  const tree = renderView(controller.getSnapshot())
+  expect((getByTestId(tree, 'status-policy').props as { children?: string }).children).toBe(
+    'user-cache',
+  )
 })
 
 test('ctrl-click multi-selects rows without entering a directory', async () => {
@@ -784,16 +806,3 @@ test('Extract is disabled until native is ready', () => {
   expect(extracted).toBe(false)
 })
 
-test('remembered volume shows user-cache badge on the next sibling-policy open', async () => {
-  const fake = createFakeNative({ pickFile: '/archives/hello.tar' })
-  await fake.setConfig({
-    index: {
-      policy: 'sibling',
-      rememberUnwritableVolumes: true,
-      rememberedVolumes: ['/archives'],
-  expect(fake.openCalls[0]?.policy).toBe('user-cache')
-  expect(controller.getSnapshot().policy).toBe('user-cache')
-  expect(controller.getSnapshot().indexPath).toBe('user cache')
-  const tree = renderView(controller.getSnapshot())
-  expect((getByTestId(tree, 'status-policy').props as { children?: string }).children).toBe(
-    'user-cache',

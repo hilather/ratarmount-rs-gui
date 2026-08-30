@@ -9,8 +9,8 @@ import {
   type NativeAddon,
   type NativeOverwrite,
   type OpenResult,
-  type PreviewResult,
   type PersistablePolicy,
+  type PreviewResult,
   type SessionId,
 } from './napi'
 import {
@@ -333,8 +333,7 @@ export class ExplorerController {
     }
   }
 
-  async openSource(source: string, password?: string): Promise<void> {
-  async openSource(source: string, policyOverride?: PersistablePolicy): Promise<void> {
+  async openSource(source: string, password?: string, policyOverride?: PersistablePolicy): Promise<void> {
     const native = this.requireNative()
     if (!native) {
       return
@@ -374,11 +373,10 @@ export class ExplorerController {
       previewPath: null,
       path: '/',
       archivePath: source,
-      indexPath: siblingIndexPath(source),
-      dialog: { kind: 'none' },
       policy,
       siblingDialog: null,
       indexPath: indexLocationHint(policy, source, explicitPath),
+      dialog: { kind: 'none' },
     })
     try {
       await this.closeSession()
@@ -387,12 +385,10 @@ export class ExplorerController {
       }
       const outcome = await native.open({
         source,
-        policy: 'sibling',
-        recreate: 'if-invalid',
-        ...(password === undefined ? {} : { password }),
         policy,
         recreate,
         ...(explicitPath ? { explicitPath } : {}),
+        ...(password === undefined ? {} : { password }),
       })
       const sessionId = await this.sessionFromOpen(outcome)
       if (this.disposed || gen !== this.gen) {
@@ -407,7 +403,6 @@ export class ExplorerController {
       this.sessionId = null
       const ce = commandErrorFromUnknown(err)
       if (ce.code === 'BadPassword') {
-      if (ce.code === 'SiblingNotWritable') {
         this.patch({
           status: 'error',
           listing: false,
@@ -415,6 +410,15 @@ export class ExplorerController {
           error: ce.message,
           errorRetryable: false,
           dialog: { kind: 'password' },
+        })
+        return
+      }
+      if (ce.code === 'SiblingNotWritable') {
+        this.patch({
+          status: 'error',
+          listing: false,
+          loadingMore: false,
+          error: ce.message,
           errorRetryable: true,
           siblingDialog: { source, remember: false },
         })
@@ -424,25 +428,20 @@ export class ExplorerController {
     }
   }
 
-  async submitPassword(password: string): Promise<void> {
-    const source = this.snapshot.archivePath
-    this.patch({ dialog: { kind: 'none' } })
-    if (source == null) {
-      return
-    }
-    await this.openSource(source, password)
-  }
-
-  dismissDialog(): void {
-    this.openAfterExtract = null
-    this.patch({ dialog: { kind: 'none' } })
   toggleSiblingRemember(): void {
     const dialog = this.snapshot.siblingDialog
     if (!dialog) {
+      return
+    }
     this.patch({ siblingDialog: { ...dialog, remember: !dialog.remember } })
+  }
+
   async confirmSiblingUseCache(remember = this.snapshot.siblingDialog?.remember ?? false): Promise<void> {
+    const dialog = this.snapshot.siblingDialog
     const native = this.native
     if (!dialog || !native) {
+      return
+    }
     if (remember) {
       try {
         const cfg = await native.getConfig()
@@ -457,9 +456,27 @@ export class ExplorerController {
         this.setError(err)
         return
       }
+    }
     this.patch({ siblingDialog: null })
-    await this.openSource(dialog.source, 'user-cache')
+    await this.openSource(dialog.source, undefined, 'user-cache')
+  }
+
   cancelSiblingDialog(): void {
+    this.patch({ siblingDialog: null })
+  }
+
+  async submitPassword(password: string): Promise<void> {
+    const source = this.snapshot.archivePath
+    this.patch({ dialog: { kind: 'none' } })
+    if (source == null) {
+      return
+    }
+    await this.openSource(source, password)
+  }
+
+  dismissDialog(): void {
+    this.openAfterExtract = null
+    this.patch({ dialog: { kind: 'none' } })
   }
 
   async closeArchive(): Promise<void> {
