@@ -38,3 +38,6 @@ jobs:
       - name: Test
         run: bun test
         working-directory: app
+      - name: Typecheck
+        run: bun run typecheck
+        working-directory: app

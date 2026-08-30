@@ -25,18 +25,13 @@ export function App() {
   )
 }
 
-// Tests import `App` without opening a window.
-const isEntryPoint =
-  typeof Bun !== 'undefined'
-    ? Bun.isStandaloneExecutable || Bun.main === import.meta.path
-    : typeof window !== 'undefined'
-
-if (isEntryPoint) {
+// Skip `render()` when this module is imported.
+if (import.meta.main || Bun.isStandaloneExecutable) {
   render(<App />, {
     title: WINDOW_TITLE,
     width: WINDOW_WIDTH,
     height: WINDOW_HEIGHT,
-    // Agent checks need real GPU paint without stealing the user's keyboard.
+    // GPUIX_BACKGROUND=1 opens the window unfocused.
     focus: typeof process === 'undefined' || process.env.GPUIX_BACKGROUND !== '1',
   })
 }
