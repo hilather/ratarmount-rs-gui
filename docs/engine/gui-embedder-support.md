@@ -4,7 +4,7 @@
 >
 > **Canonical once G0–G2 land:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` ([hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs)). That work is an **external engine PR**, not a GUI PR. After the crate exists, the engine file wins on drift.
 >
-> Implement G0–G7 in **ratarmount-rs**. Do not paste GPUI / napi code into the engine repo. After the engine file exists, it wins on drift.
+> Implement G0–G7 in **ratarmount-rs**. Do not paste GPUI / napi code into the engine repo. Canonical flips when the crate/API exists, not when the markdown file is present.
 
 ---
 
