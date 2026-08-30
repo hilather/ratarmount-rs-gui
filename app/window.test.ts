@@ -15,16 +15,26 @@ test('app.tsx uses the hello-window constants on a dark desktop chrome', async (
   expect(source).toContain('WINDOW_TITLE')
   expect(source).toContain('WINDOW_WIDTH')
   expect(source).toContain('WINDOW_HEIGHT')
-  expect(source).toContain('PLACEHOLDER')
-  expect(source).toContain('#1A1A1A')
-  expect(source).toContain("from '../native'")
+  expect(source).toContain('render(')
+  expect(source).toContain('<App />')
   expect(source).not.toContain('titlebarTransparent')
   expect(source).not.toContain('typeof window')
+})
+
+test('explorer chrome uses the placeholder and dark canvas', async () => {
+  const source = await Bun.file(new URL('./explorer-view.tsx', import.meta.url)).text()
+  expect(source).toContain('PLACEHOLDER')
+  expect(source).toContain('#1A1A1A')
+  expect(source).toContain('virtual-list')
+  expect(source).toContain('testId="open"')
+  expect(source).toContain('testId="list"')
 })
 
 test('native-addon.ts documents the napi import path', async () => {
   const { NATIVE_ADDON_MODULE } = await import('./native-addon')
   expect(NATIVE_ADDON_MODULE).toBe('../native')
+  const source = await Bun.file(new URL('./native-addon.ts', import.meta.url)).text()
+  expect(source).toContain("from '../native'")
 })
 
 test('package scripts do not advertise a browser target', async () => {

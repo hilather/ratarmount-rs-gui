@@ -4,7 +4,7 @@ A native GPU-rendered archive explorer that indexes and browses multi-gigabyte T
 
 GPUIX (React + Zed GPUI) in the UI process. `ratarmount-session` in-process for index / list / extract. No Electron. No webview. Archive bytes never enter the JavaScript heap.
 
-**Status:** W1 napi stubs + fake catalog. `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount`. Native commands (`pickFile`, `list`, …) are stubs against an in-memory catalog; explorer chrome is W3.
+**Status:** W3 explorer chrome on the W1 fake catalog. `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount` with Open/Close, breadcrumbs, and a paged virtual list. Native commands (`pickFile`, `list`, …) are stubs against an in-memory catalog until W2.
 
 Chrome/Electron `ArrayBuffer` and wasm32 linear memory both cap around 2–4 GiB — that is the failure mode this product exists to avoid. The desktop GPUIX build is in scope **only if** React never sees archive bytes. The GPUIX browser/`bun run web` target is out of scope.
 
@@ -57,12 +57,14 @@ cd app && bun install && bun run dev
 cargo test -p native
 cargo run -p native -- --self-test
 
-# Optional: build the Bun-loadable addon (`napi-addon` feature), then (W3) import it:
+# Native addon used by Open / list (napi-addon feature):
 #   import { pickFile, list, open, close, on } from '../native'
 cd native && bun install && bun run build
 ```
 
-Window: 1100×720, title `ratarmount`, placeholder “Open an archive”. The hello window does not load the addon yet. Set `RGUI_FAKE=1` so `open` accepts any path and serves the fake catalog.
+Window: 1100×720, title `ratarmount`. Open an archive from the toolbar (file picker). Breadcrumbs, a paged `<virtual-list>` (name/size/mtime), and a status bar show the current directory. Enter a folder with Enter or double-click; Backspace goes up. Listing stays page-sized (default 200, max 500); it does not dump the catalog into React state.
+
+Build the napi addon so Open can call `pickFile`/`list`. `bun run dev` still starts if the `.node` is missing and surfaces that on Open. Set `RGUI_FAKE=1` so `open` accepts any path and serves the fake catalog.
 
 The native window title is a **manual** smoke check. Automated coverage is `cargo test -p native` (and `native --self-test`) and `bun test` in `app/`.
 
