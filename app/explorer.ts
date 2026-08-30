@@ -13,7 +13,12 @@ import {
   type PersistablePolicy,
   type SessionId,
 } from './napi'
-import { hideMemoryPolicy, indexLocationHint, volumeKeyForSource } from './settings'
+import {
+  effectiveOpenPolicy,
+  hideMemoryPolicy,
+  indexLocationHint,
+  volumeKeyForSource,
+} from './settings'
 
 export const LIST_LIMIT_DEFAULT = 200
 export const LIST_LIMIT_MAX = 500
@@ -341,6 +346,14 @@ export class ExplorerController {
     try {
       const cfg = await native.getConfig()
       policy = policyOverride ?? hideMemoryPolicy(cfg.index.policy)
+      if (policyOverride == null) {
+        policy = effectiveOpenPolicy(
+          policy,
+          source,
+          cfg.index.rememberedVolumes,
+          cfg.index.rememberUnwritableVolumes,
+        )
+      }
       recreate = cfg.index.recreate
       explicitPath = cfg.index.explicitPath || undefined
     } catch {

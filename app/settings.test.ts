@@ -4,6 +4,7 @@ import { clickByTestId, collectTestIds, getByTestId, queryByTestId } from './gpu
 import { createFakeNative } from './fake-native'
 import { PREVIEW_CEILING_BYTES } from './napi'
 import {
+  effectiveOpenPolicy,
   hideMemoryPolicy,
   indexLocationHint,
   SettingsController,
@@ -104,6 +105,25 @@ test('index location hint never invents local-index-v1 names', () => {
   expect(indexLocationHint('user-cache', '/data/foo.tar')).not.toContain('local-index-v1')
   expect(indexLocationHint('temp', '/data/foo.tar')).toBe('temp')
   expect(volumeKeyForSource('/archives/hello.tar')).toBe('/archives')
+})
+
+test('volumeKeyForSource matches native Path parent (root + Windows separators)', () => {
+  expect(volumeKeyForSource('/hello.tar')).toBe('/')
+  expect(volumeKeyForSource('/archives/hello.tar')).toBe('/archives')
+  expect(volumeKeyForSource('hello.tar')).toBe('hello.tar')
+  const win = 'C:\\archives\\hello.tar'
+  if (process.platform === 'win32') {
+    expect(volumeKeyForSource(win)).toBe('C:\\archives')
+  } else {
+    // Unix Path does not split on '\\' — keep the OS prefix, do not rewrite to C:/archives.
+    expect(volumeKeyForSource(win)).toBe(win)
+  }
+  expect(
+    effectiveOpenPolicy('sibling', '/archives/hello.tar', ['/archives'], true),
+  ).toBe('user-cache')
+  expect(effectiveOpenPolicy('sibling', '/archives/hello.tar', ['/archives'], false)).toBe(
+    'sibling',
+  )
 })
 
 test('settings chips fire policy changes', async () => {

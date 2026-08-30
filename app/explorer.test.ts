@@ -784,3 +784,16 @@ test('Extract is disabled until native is ready', () => {
   expect(extracted).toBe(false)
 })
 
+test('remembered volume shows user-cache badge on the next sibling-policy open', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/hello.tar' })
+  await fake.setConfig({
+    index: {
+      policy: 'sibling',
+      rememberUnwritableVolumes: true,
+      rememberedVolumes: ['/archives'],
+  expect(fake.openCalls[0]?.policy).toBe('user-cache')
+  expect(controller.getSnapshot().policy).toBe('user-cache')
+  expect(controller.getSnapshot().indexPath).toBe('user cache')
+  const tree = renderView(controller.getSnapshot())
+  expect((getByTestId(tree, 'status-policy').props as { children?: string }).children).toBe(
+    'user-cache',

@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 
-use crate::error::{ApiError, Result};
+use crate::error::{ApiError, ErrorCode, Result};
 use crate::events::Event;
 use crate::paths::discard_secret;
 use crate::state::{JobKind, JobStatus, NativeApp};
@@ -21,6 +21,10 @@ pub fn engine_unavailable(op: &'static str) -> ApiError {
     ApiError::internal(format!(
         "TODO(engine): {op} needs ratarmount-session (G0.2/G1/G2)"
     ))
+}
+
+pub fn is_engine_todo(err: &ApiError) -> bool {
+    err.code == ErrorCode::Internal && err.message.contains("TODO(engine)")
 }
 
 #[allow(dead_code)]
@@ -189,6 +193,23 @@ pub fn index_location_hint(
     }
 }
 
+/// Map `resolve_index` onto a debug/status string. Engine TODOs stay unresolved
+/// hints; structured errors (`SiblingNotWritable`, …) propagate.
+pub fn resolved_index_display(
+    resolved: Result<ResolvedIndex>,
+    policy: IndexPolicy,
+    source: &str,
+    explicit_path: Option<&str>,
+) -> Result<String> {
+    match resolved {
+        Ok(loc) => Ok(loc.display),
+        Err(err) if is_engine_todo(&err) => {
+            Ok(unresolved_index_display(policy, source, explicit_path))
+        }
+        Err(err) => Err(err),
+    }
+}
+
 /// Debug line for W5. Does not invent sidecar names.
 pub fn unresolved_index_display(
     policy: IndexPolicy,
@@ -246,9 +267,17 @@ pub fn open_real(app: &mut NativeApp, opts: OpenOpts) -> Result<OpenOutcome> {
         ));
     }
 
-    let displayed = match resolve_index(&source, policy, opts.explicit_path.as_deref()) {
-        Ok(loc) => loc.display,
-        Err(_) => unresolved_index_display(policy, &source, opts.explicit_path.as_deref()),
+    let displayed = match resolved_index_display(
+        resolve_index(&source, policy, opts.explicit_path.as_deref()),
+        policy,
+        &source,
+        opts.explicit_path.as_deref(),
+    ) {
+        Ok(displayed) => displayed,
+        Err(err) => {
+            discard_secret(opts.password);
+            return Err(err);
+        }
     };
     app.last_index_debug_log = Some(debug_log_resolved_index_path(&displayed));
 

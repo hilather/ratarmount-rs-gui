@@ -56,13 +56,48 @@ export function indexLocationHint(
   }
 }
 
+/** Match native `volume_key_for_source`: Path parent, empty parent → source. Keep OS separators. */
 export function volumeKeyForSource(source: string): string {
-  const norm = source.replaceAll('\\', '/')
-  const idx = norm.lastIndexOf('/')
-  if (idx <= 0) {
-    return norm
+  const win = typeof process !== 'undefined' && process.platform === 'win32'
+  if (!win) {
+    const idx = source.lastIndexOf('/')
+    if (idx < 0) {
+      return source
+    }
+    if (idx === 0) {
+      return '/'
+    }
+    return source.slice(0, idx)
   }
-  return norm.slice(0, idx)
+  const idx = Math.max(source.lastIndexOf('\\'), source.lastIndexOf('/'))
+  if (idx < 0) {
+    return source
+  }
+  const parent = source.slice(0, idx)
+  if (parent === '') {
+    return source
+  }
+  // Native Path::parent("C:\\hello.tar") is "C:\\".
+  if (/^[A-Za-z]:$/.test(parent)) {
+    return source.slice(0, idx + 1)
+  }
+  return parent
+}
+
+export function effectiveOpenPolicy(
+  policy: PersistablePolicy,
+  source: string,
+  rememberedVolumes: readonly string[],
+  rememberUnwritableVolumes: boolean,
+): PersistablePolicy {
+  if (
+    policy === 'sibling' &&
+    rememberUnwritableVolumes &&
+    rememberedVolumes.includes(volumeKeyForSource(source))
+  ) {
+    return 'user-cache'
+  }
+  return policy
 }
 
 export function policyBadge(policy: IndexPolicy | null): string {

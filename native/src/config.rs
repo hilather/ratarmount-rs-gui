@@ -214,7 +214,7 @@ pub fn write_config_file(path: &Path, cfg: &Config) -> Result<()> {
     let _ = sanitize_config(&mut to_write);
     let text = format_config_toml(&to_write);
     debug_assert!(
-        !text.to_ascii_lowercase().contains("password"),
+        !toml_has_password_key(&text),
         "config.toml must never contain a password key"
     );
     debug_assert!(
@@ -502,6 +502,28 @@ fn parse_section(line: &str) -> Option<String> {
     } else {
         None
     }
+}
+
+/// True when a TOML *key* contains "password" (path values may mention the word).
+fn toml_has_password_key(text: &str) -> bool {
+    for raw in text.lines() {
+        let line = strip_comment(raw);
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('[') {
+            continue;
+        }
+        if let Ok((key, _)) = parse_assignment(trimmed) {
+            if key.to_ascii_lowercase().contains("password") {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+pub fn toml_has_password_key_for_test(text: &str) -> bool {
+    toml_has_password_key(text)
 }
 
 fn parse_assignment(line: &str) -> std::result::Result<(String, TomlValue), String> {

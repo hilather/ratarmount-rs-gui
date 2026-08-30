@@ -3,12 +3,17 @@ use std::path::{Path, PathBuf};
 
 use crate::config::{
     clear_local_index_cache, config_toml_path, format_config_toml,
-    is_safe_local_index_dir_for_test, local_index_v1_dir, parse_config_toml, volume_key_for_source,
-    PersistPaths, LOCAL_INDEX_V1,
+    is_safe_local_index_dir_for_test, local_index_v1_dir, parse_config_toml,
+    toml_has_password_key_for_test, volume_key_for_source, write_config_file, PersistPaths,
+    LOCAL_INDEX_V1,
 };
-use crate::error::ErrorCode;
-use crate::session::{index_location_hint, resolve_index, unresolved_index_display};
+use crate::error::{ApiError, ErrorCode};
+use crate::session::{
+    engine_unavailable, index_location_hint, resolve_index, resolved_index_display,
+    session_feature_enabled, unresolved_index_display, ResolvedIndex, INDEX_DEBUG_PREFIX,
+};
 use crate::state::NativeApp;
+use crate::types::Config;
 use crate::types::{
     ConfigPatch, IndexConfigPatch, IndexPolicy, OpenOpts, PreviewConfigPatch, Recreate,
     PREVIEW_CEILING_BYTES, PREVIEW_DEFAULT_BYTES,
@@ -331,8 +336,12 @@ fn remembered_volume_switches_sibling_to_user_cache() {
     })
     .unwrap();
     app.set_sibling_writable(Some(false));
+    assert_eq!(
+        app.effective_open_policy(IndexPolicy::Sibling, &source),
+        IndexPolicy::UserCache
+    );
     let outcome = app.open(OpenOpts {
-        source,
+        source: source.clone(),
         policy: IndexPolicy::Sibling,
         explicit_path: None,
         recreate: Recreate::Never,
@@ -340,11 +349,83 @@ fn remembered_volume_switches_sibling_to_user_cache() {
         recursive: None,
         recursion_depth: None,
     });
-    if let Err(err) = outcome {
-        assert_ne!(err.code, ErrorCode::SiblingNotWritable);
-        assert_eq!(err.code, ErrorCode::Internal);
-        assert!(err.message.contains("TODO(engine)"));
+    let log = app
+        .last_index_debug_log()
+        .expect("index debug log")
+        .to_string();
+    assert!(log.starts_with(INDEX_DEBUG_PREFIX));
+    assert!(log.contains("user-cache"));
+    if session_feature_enabled() {
+        assert!(
+            outcome.is_ok(),
+            "session feature: remembered volume should open via user-cache, got {outcome:?}"
+        );
+        return;
     }
+    let err = outcome.expect_err("engine still TODO after remap to user-cache");
+    assert_ne!(err.code, ErrorCode::SiblingNotWritable);
+    assert_eq!(err.code, ErrorCode::Internal);
+    assert!(err.message.contains("TODO(engine)"));
+}
+
+#[test]
+fn volume_key_matches_path_parent_rule() {
+    assert_eq!(volume_key_for_source("/hello.tar"), "/");
+    assert_eq!(volume_key_for_source("/archives/hello.tar"), "/archives");
+    assert_eq!(volume_key_for_source("hello.tar"), "hello.tar");
+    // Unix Path does not split on '\\'; keep the OS prefix (Windows native splits).
+    let win = "C:\\archives\\hello.tar";
+    if cfg!(windows) {
+        assert_eq!(volume_key_for_source(win), "C:\\archives");
+    } else {
+        assert_eq!(volume_key_for_source(win), win);
+    }
+}
+
+#[test]
+fn resolved_index_display_propagates_sibling_not_writable() {
+    let err = resolved_index_display(
+        Err(ApiError::sibling_not_writable("dir not writable")),
+        IndexPolicy::Sibling,
+        "/data/foo.tar",
+        None,
+    )
+    .expect_err("structured error");
+    assert_eq!(err.code, ErrorCode::SiblingNotWritable);
+    assert!(err.retryable());
+
+    let hint = resolved_index_display(
+        Err(engine_unavailable("resolve_index")),
+        IndexPolicy::UserCache,
+        "/data/foo.tar",
+        None,
+    )
+    .expect("engine TODO is an unresolved hint");
+    assert!(hint.contains("TODO(engine)"));
+    assert!(hint.contains("user-cache"));
+
+    let ok = resolved_index_display(
+        Ok(ResolvedIndex {
+            display: "/data/foo.tar.index.sqlite".into(),
+        }),
+        IndexPolicy::Sibling,
+        "/data/foo.tar",
+        None,
+    )
+    .unwrap();
+    assert_eq!(ok, "/data/foo.tar.index.sqlite");
+}
+
+#[test]
+fn write_config_allows_password_substring_in_path_values() {
+    let tmp = TempTree::new("pw-path");
+    let mut cfg = Config::default_in_memory();
+    cfg.index.explicit_path = "/tmp/password-index.sqlite".into();
+    cfg.index.extra_dirs = vec!["/srv/password-store".into()];
+    let text = format_config_toml(&cfg);
+    assert!(text.contains("password-index.sqlite"));
+    assert!(!toml_has_password_key_for_test(&text));
+    write_config_file(&tmp.persist().config_toml, &cfg).unwrap();
 }
 
 #[test]
