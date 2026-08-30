@@ -10,7 +10,7 @@ use crate::config::{
 use crate::error::{ApiError, ErrorCode};
 use crate::session::{
     engine_unavailable, index_location_hint, resolve_index, resolved_index_display,
-    session_feature_enabled, unresolved_index_display, ResolvedIndex, INDEX_DEBUG_PREFIX,
+    unresolved_index_display, ResolvedIndex, INDEX_DEBUG_PREFIX,
 };
 use crate::state::NativeApp;
 use crate::types::Config;
@@ -355,13 +355,7 @@ fn remembered_volume_switches_sibling_to_user_cache() {
         .to_string();
     assert!(log.starts_with(INDEX_DEBUG_PREFIX));
     assert!(log.contains("user-cache"));
-    if session_feature_enabled() {
-        assert!(
-            outcome.is_ok(),
-            "session feature: remembered volume should open via user-cache, got {outcome:?}"
-        );
-        return;
-    }
+    // `session` is an empty reserved feature; EngineSession::open is still TODO(engine).
     let err = outcome.expect_err("engine still TODO after remap to user-cache");
     assert_ne!(err.code, ErrorCode::SiblingNotWritable);
     assert_eq!(err.code, ErrorCode::Internal);
