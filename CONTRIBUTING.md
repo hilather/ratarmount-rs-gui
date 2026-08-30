@@ -1,0 +1,50 @@
+# Contributing
+
+This repository is a native GPUIX desktop explorer for [ratarmount-rs](https://github.com/hilather/ratarmount-rs). Humans and coding agents follow the same bar.
+
+## Before you write code
+
+1. Read [AGENTS.md](AGENTS.md) (mandatory policy).
+2. Read [docs/README.md](docs/README.md) and the architecture set `docs/architecture/01`–`05`.
+3. Read the current wave file under [docs/implementation/waves/](docs/implementation/waves/).
+4. If the change is architectural, read [docs/design/design.md](docs/design/design.md) and any relevant ADR.
+
+Status today: **documentation seed**. Do not start `app/` / `native/` work except as wave W0.
+
+## Tests
+
+- Every behavior change and bug fix lands with automated tests in the **same change**.
+- Bug fixes: a test that fails before the fix and passes after. Mark it `Regression:` plus a short symptom.
+- Native: `cargo test -p native` (and `native --self-test` once W1 lands).
+- UI: GPUIX `getByTestId` against small fixtures under `native/tests/fixtures/`.
+- Never delete or weaken a test unless it is provably incorrect; document why.
+- Do not put 40 GiB archives in CI.
+
+## Docs
+
+Stale docs are a defect. Update living docs in the **same change** as the code (see the trigger table in `AGENTS.md`). Tick the wave checklist for the wave you are implementing.
+
+## CI
+
+CI is mandatory. Do not skip or weaken tests to go green.
+
+When `native/` and `app/` exist:
+
+```bash
+cargo fmt --all
+cargo clippy -p native --all-targets -- -D warnings
+cargo test -p native
+# bun test   (app/)
+```
+
+## Review
+
+Do not treat implementation as done until it has been code-reviewed. Hard-rule violations (JS heap copies, `readAll`, browser target, load-all-paths, new index format) are merge blockers.
+
+## Dependencies
+
+Prefer not adding dependencies. New ones need PR justification.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

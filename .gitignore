@@ -1,0 +1,45 @@
+# JS / GPUIX
+node_modules/
+app/node_modules/
+app/dist/
+dist/
+.bun/
+*.tsbuildinfo
+
+# Rust
+target/
+**/*.rs.bk
+Cargo.lock.bak
+
+# Indexes and fixture output (never commit generated sidecars)
+*.index.sqlite
+*.index.ptr
+*.index.*.sqlite
+native/tests/fixtures/out/
+native/tests/fixtures/generated/
+**/local-index-v1/
+**/*.sqlite-wal
+**/*.sqlite-shm
+
+# Secrets / local env
+.env
+.env.*
+!.env.example
+
+# Logs and crash dumps
+*.log
+crash-*.txt
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+*~
+
+# Coverage / tmp
+coverage/
+.cache/
+tmp/
+.tmpdir/
