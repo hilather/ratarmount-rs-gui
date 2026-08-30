@@ -2,6 +2,7 @@ pub const LIST_LIMIT_DEFAULT: u32 = 200;
 pub const LIST_LIMIT_MAX: u32 = 500;
 pub const PREVIEW_DEFAULT_BYTES: i64 = 8 * 1024 * 1024;
 pub const PREVIEW_CEILING_BYTES: i64 = 64 * 1024 * 1024;
+pub const LOCAL_CACHE_DEFAULT_BYTES: i64 = 2 * 1024 * 1024 * 1024;
 pub const EXTRACT_PLAN_CONFLICT_SAMPLE: usize = 50;
 pub const EXTRACT_PLAN_CONFLICT_SCAN_ROWS: usize = 10_000;
 pub const EXTRACT_PLAN_CONFLICT_SCAN_MS: u64 = 250;
@@ -110,6 +111,8 @@ pub struct IndexConfig {
     pub recreate: Recreate,
     pub local_cache_bytes: i64,
     pub remember_unwritable_volumes: bool,
+    /// Archive parent dirs the user opted to send to user-cache (until G4 volume ids).
+    pub remembered_volumes: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -152,8 +155,9 @@ impl Config {
                 explicit_path: String::new(),
                 extra_dirs: Vec::new(),
                 recreate: Recreate::IfInvalid,
-                local_cache_bytes: 2 * 1024 * 1024 * 1024,
+                local_cache_bytes: LOCAL_CACHE_DEFAULT_BYTES,
                 remember_unwritable_volumes: true,
+                remembered_volumes: Vec::new(),
             },
             preview: PreviewConfig {
                 max_bytes: PREVIEW_DEFAULT_BYTES,
@@ -180,6 +184,7 @@ pub struct IndexConfigPatch {
     pub recreate: Option<Recreate>,
     pub local_cache_bytes: Option<i64>,
     pub remember_unwritable_volumes: Option<bool>,
+    pub remembered_volumes: Option<Vec<String>>,
 }
 
 #[derive(Clone, Debug, Default)]

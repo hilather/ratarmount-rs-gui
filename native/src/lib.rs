@@ -1,5 +1,6 @@
 mod catalog;
 mod commands;
+mod config;
 #[cfg(feature = "napi-addon")]
 mod dialog;
 mod error;
@@ -30,3 +31,5 @@ mod w1_tests;
 mod w2_tests;
 #[cfg(test)]
 mod w4_tests;
+#[cfg(test)]
+mod w5_tests;

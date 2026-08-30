@@ -5,12 +5,15 @@ import {
   type DirEnt,
   type ExtractConflict,
   type ExtractPlan,
+  type IndexPolicy,
   type NativeAddon,
   type NativeOverwrite,
   type OpenResult,
   type PreviewResult,
+  type PersistablePolicy,
   type SessionId,
 } from './napi'
+import { hideMemoryPolicy, indexLocationHint, volumeKeyForSource } from './settings'
 
 export const LIST_LIMIT_DEFAULT = 200
 export const LIST_LIMIT_MAX = 500
@@ -59,6 +62,11 @@ export type Crumb = {
   path: string
 }
 
+export type SiblingDialog = {
+  source: string
+  remember: boolean
+}
+
 export type ExplorerSnapshot = {
   status: ExplorerStatus
   listing: boolean
@@ -68,6 +76,8 @@ export type ExplorerSnapshot = {
   nativeReady: boolean
   archivePath: string | null
   indexPath: string | null
+  policy: IndexPolicy | null
+  siblingDialog: SiblingDialog | null
   path: string
   entries: DirEnt[]
   nextCursor: Cursor | null
@@ -89,6 +99,8 @@ const IDLE: ExplorerSnapshot = {
   nativeReady: false,
   archivePath: null,
   indexPath: null,
+  policy: null,
+  siblingDialog: null,
   path: '/',
   entries: [],
   nextCursor: null,
@@ -317,11 +329,23 @@ export class ExplorerController {
   }
 
   async openSource(source: string, password?: string): Promise<void> {
+  async openSource(source: string, policyOverride?: PersistablePolicy): Promise<void> {
     const native = this.requireNative()
     if (!native) {
       return
     }
     const gen = ++this.gen
+    let policy: PersistablePolicy = policyOverride ?? 'sibling'
+    let recreate: 'never' | 'if-invalid' | 'always' = 'if-invalid'
+    let explicitPath: string | undefined
+    try {
+      const cfg = await native.getConfig()
+      policy = policyOverride ?? hideMemoryPolicy(cfg.index.policy)
+      recreate = cfg.index.recreate
+      explicitPath = cfg.index.explicitPath || undefined
+    } catch {
+      // Keep sibling / if-invalid if config is unavailable.
+    }
     this.patch({
       status: 'opening',
       listing: true,
@@ -339,6 +363,9 @@ export class ExplorerController {
       archivePath: source,
       indexPath: siblingIndexPath(source),
       dialog: { kind: 'none' },
+      policy,
+      siblingDialog: null,
+      indexPath: indexLocationHint(policy, source, explicitPath),
     })
     try {
       await this.closeSession()
@@ -350,6 +377,9 @@ export class ExplorerController {
         policy: 'sibling',
         recreate: 'if-invalid',
         ...(password === undefined ? {} : { password }),
+        policy,
+        recreate,
+        ...(explicitPath ? { explicitPath } : {}),
       })
       const sessionId = await this.sessionFromOpen(outcome)
       if (this.disposed || gen !== this.gen) {
@@ -364,6 +394,7 @@ export class ExplorerController {
       this.sessionId = null
       const ce = commandErrorFromUnknown(err)
       if (ce.code === 'BadPassword') {
+      if (ce.code === 'SiblingNotWritable') {
         this.patch({
           status: 'error',
           listing: false,
@@ -371,6 +402,8 @@ export class ExplorerController {
           error: ce.message,
           errorRetryable: false,
           dialog: { kind: 'password' },
+          errorRetryable: true,
+          siblingDialog: { source, remember: false },
         })
         return
       }
@@ -390,6 +423,30 @@ export class ExplorerController {
   dismissDialog(): void {
     this.openAfterExtract = null
     this.patch({ dialog: { kind: 'none' } })
+  toggleSiblingRemember(): void {
+    const dialog = this.snapshot.siblingDialog
+    if (!dialog) {
+    this.patch({ siblingDialog: { ...dialog, remember: !dialog.remember } })
+  async confirmSiblingUseCache(remember = this.snapshot.siblingDialog?.remember ?? false): Promise<void> {
+    const native = this.native
+    if (!dialog || !native) {
+    if (remember) {
+      try {
+        const cfg = await native.getConfig()
+        const volume = volumeKeyForSource(dialog.source)
+        const volumes = cfg.index.rememberedVolumes.includes(volume)
+          ? cfg.index.rememberedVolumes
+          : [...cfg.index.rememberedVolumes, volume]
+        await native.setConfig({
+          index: { rememberUnwritableVolumes: true, rememberedVolumes: volumes },
+        })
+      } catch (err) {
+        this.setError(err)
+        return
+      }
+    this.patch({ siblingDialog: null })
+    await this.openSource(dialog.source, 'user-cache')
+  cancelSiblingDialog(): void {
   }
 
   async closeArchive(): Promise<void> {

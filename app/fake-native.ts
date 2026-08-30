@@ -1,6 +1,10 @@
 import {
   CommandError,
   type Config,
+  defaultConfig,
+  PREVIEW_CEILING_BYTES,
+  type CacheClearResult,
+  type ConfigPatch,
   type DirEnt,
   type ExtractOpts,
   type ExtractPlan,
@@ -42,6 +46,8 @@ export type FakeNative = NativeAddon & {
   completeExtract(jobId: number): void
   failExtract(jobId: number, code: string, message: string, retryable: boolean): void
   emitExtractProgress(event: ExtractProgressEvent): void
+  config: Config
+  cacheClears: number
 }
 
 export function createFakeNative(
@@ -53,6 +59,9 @@ export function createFakeNative(
     extractPlan?: Partial<ExtractPlan>
     config?: Partial<Config>
     extraFiles?: { parent: string; name: string; size: number; body?: string }[]
+    openMode?: 'session' | 'job' | 'job-no-session' | 'job-failed'
+    siblingNotWritable?: boolean
+    cacheRemoved?: number
   } = {},
 ): FakeNative {
   let nextSession = 1
@@ -81,6 +90,8 @@ export function createFakeNative(
       openLargeWithSystem: options.config?.preview?.openLargeWithSystem ?? true,
     },
   }
+  let config = defaultConfig()
+  let cacheClears = 0
 
   const fake: FakeNative = {
     listCalls,
@@ -110,15 +121,27 @@ export function createFakeNative(
       for (const cb of extractProgress) {
         cb(event)
       }
+    get config() {
+      return config
+    get cacheClears() {
+      return cacheClears
     },
     async pickFile() {
       return options.pickFile === undefined ? '/tmp/hello.tar' : options.pickFile
     },
     async pickDir() {
       return options.pickDir === undefined ? '/tmp/out' : options.pickDir
+      return options.pickDir === undefined ? '/indexes' : options.pickDir
     },
     async open(opts) {
       openCalls.push(opts)
+      if (options.siblingNotWritable && opts.policy === 'sibling') {
+        throw new CommandError(
+          'SiblingNotWritable',
+          'The directory next to the archive is not writable',
+          true,
+        )
+      }
       const mode = options.openMode ?? (opts.recreate === 'always' ? 'job' : 'session')
       if (mode === 'bad-password') {
         if (opts.password !== FAKE_ENCRYPTED_PASSWORD) {
@@ -304,6 +327,45 @@ export function createFakeNative(
     },
     async getConfig() {
       return config
+      return structuredClone(config)
+    async setConfig(patch: ConfigPatch) {
+      if (patch.index) {
+        if (patch.index.policy === 'memory') {
+          throw new CommandError('Internal', "config.index.policy cannot be 'memory'", false)
+        if (patch.index.policy) {
+          config.index.policy = patch.index.policy
+        if (patch.index.explicitPath !== undefined) {
+          config.index.explicitPath = patch.index.explicitPath
+        if (patch.index.extraDirs) {
+          config.index.extraDirs = [...patch.index.extraDirs]
+        if (patch.index.recreate) {
+          config.index.recreate = patch.index.recreate
+        if (patch.index.localCacheBytes !== undefined) {
+          config.index.localCacheBytes = Math.max(0, patch.index.localCacheBytes)
+        if (patch.index.rememberUnwritableVolumes !== undefined) {
+          config.index.rememberUnwritableVolumes = patch.index.rememberUnwritableVolumes
+        if (patch.index.rememberedVolumes) {
+          config.index.rememberedVolumes = [...patch.index.rememberedVolumes]
+      if (patch.preview) {
+        if (patch.preview.maxBytes !== undefined) {
+          config.preview.maxBytes = Math.min(Math.max(0, patch.preview.maxBytes), PREVIEW_CEILING_BYTES)
+        if (patch.preview.openLargeWithSystem !== undefined) {
+          config.preview.openLargeWithSystem = patch.preview.openLargeWithSystem
+      if (patch.extract) {
+        if (patch.extract.overwrite) {
+          config.extract.overwrite = patch.extract.overwrite
+        if (patch.extract.allowUnsafePaths !== undefined) {
+          config.extract.allowUnsafePaths = patch.extract.allowUnsafePaths
+      if (patch.engine) {
+        if (patch.engine.bundleCli !== undefined) {
+          config.engine.bundleCli = patch.engine.bundleCli
+        if (patch.engine.cliPath !== undefined) {
+          config.engine.cliPath = patch.engine.cliPath
+      if (patch.recent?.paths) {
+        config.recent.paths = [...patch.recent.paths]
+    async clearLocalIndexCache(): Promise<CacheClearResult> {
+      cacheClears += 1
+      return { removed: options.cacheRemoved ?? 1 }
     },
     on(event, cb) {
       if (event === 'jobSucceeded') {

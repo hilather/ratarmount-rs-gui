@@ -154,6 +154,41 @@ pub fn extract_opts_to_request(opts: &ExtractOpts, overwrite: Overwrite) -> Extr
     }
 }
 
+/// TODO(engine G4): call `ratarmount-session` / `ratarmount-index` `resolve_index`.
+/// Do not invent `local-index-v1` hashed cache keys in this repo.
+pub fn resolve_index(
+    source: &str,
+    policy: IndexPolicy,
+    explicit_path: Option<&str>,
+) -> Result<ResolvedIndex> {
+    let _ = (source, policy, explicit_path);
+    Err(engine_unavailable("resolve_index"))
+}
+
+#[derive(Clone, Debug)]
+pub struct ResolvedIndex {
+    pub display: String,
+}
+
+/// Status-bar hint. Not the G4 seven-step table and not a sha256 cache key.
+#[allow(dead_code)]
+pub fn index_location_hint(
+    policy: IndexPolicy,
+    source: &str,
+    explicit_path: Option<&str>,
+) -> String {
+    match policy {
+        IndexPolicy::Sibling => format!("{source}.index.sqlite"),
+        IndexPolicy::UserCache => "user cache".to_string(),
+        IndexPolicy::Explicit => explicit_path
+            .filter(|s| !s.is_empty())
+            .unwrap_or("explicit")
+            .to_string(),
+        IndexPolicy::Temp => "temp".to_string(),
+        IndexPolicy::Memory => ":memory:".to_string(),
+    }
+}
+
 /// Debug line for W5. Does not invent sidecar names.
 pub fn unresolved_index_display(
     policy: IndexPolicy,
@@ -203,12 +238,23 @@ pub fn open_real(app: &mut NativeApp, opts: OpenOpts) -> Result<OpenOutcome> {
         return Err(ApiError::not_found(format!("unknown archive: {source}")));
     }
 
-    let displayed = unresolved_index_display(opts.policy, &source, opts.explicit_path.as_deref());
+    let policy = app.effective_open_policy(opts.policy, &source);
+    if policy == IndexPolicy::Sibling && !app.sibling_dir_is_writable(&source) {
+        discard_secret(opts.password);
+        return Err(ApiError::sibling_not_writable(
+            "The directory next to the archive is not writable",
+        ));
+    }
+
+    let displayed = match resolve_index(&source, policy, opts.explicit_path.as_deref()) {
+        Ok(loc) => loc.display,
+        Err(_) => unresolved_index_display(policy, &source, opts.explicit_path.as_deref()),
+    };
     app.last_index_debug_log = Some(debug_log_resolved_index_path(&displayed));
 
     let mut request = OpenRequest {
         source,
-        policy: opts.policy,
+        policy,
         explicit_path: opts.explicit_path,
         extra_dirs: app.config.index.extra_dirs.clone(),
         recursive: opts.recursive.unwrap_or(false),

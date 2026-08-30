@@ -5,6 +5,10 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, page_names, sample_conflicts};
+use crate::config::{
+    apply_patch, clear_local_index_cache as wipe_local_index_cache, sanitize_config,
+    write_config_file,
+};
 use crate::error::{ApiError, ErrorCode, Result};
 use crate::events::Event;
 use crate::parse::parse_native_overwrite;
@@ -410,60 +414,23 @@ impl NativeApp {
     }
 
     pub fn set_config(&mut self, patch: ConfigPatch) -> Result<Config> {
-        if let Some(index) = patch.index {
-            if let Some(policy) = index.policy {
-                if policy == IndexPolicy::Memory {
-                    return Err(ApiError::internal("config.index.policy cannot be 'memory'"));
-                }
-                self.config.index.policy = policy;
-            }
-            if let Some(path) = index.explicit_path {
-                self.config.index.explicit_path = path;
-            }
-            if let Some(dirs) = index.extra_dirs {
-                self.config.index.extra_dirs = dirs;
-            }
-            if let Some(recreate) = index.recreate {
-                self.config.index.recreate = recreate;
-            }
-            if let Some(bytes) = index.local_cache_bytes {
-                self.config.index.local_cache_bytes = bytes.max(0);
-            }
-            if let Some(remember) = index.remember_unwritable_volumes {
-                self.config.index.remember_unwritable_volumes = remember;
-            }
+        let mut next = self.config.clone();
+        apply_patch(&mut next, patch)?;
+        let _ = sanitize_config(&mut next);
+        if let Some(paths) = &self.persist {
+            write_config_file(&paths.config_toml, &next)?;
         }
-        if let Some(preview) = patch.preview {
-            if let Some(max_bytes) = preview.max_bytes {
-                let clamped = max_bytes.clamp(0, PREVIEW_CEILING_BYTES);
-                self.config.preview.max_bytes = clamped;
-            }
-            if let Some(open_large) = preview.open_large_with_system {
-                self.config.preview.open_large_with_system = open_large;
-            }
-        }
-        if let Some(extract) = patch.extract {
-            if let Some(overwrite) = extract.overwrite {
-                self.config.extract.overwrite = overwrite;
-            }
-            if let Some(allow) = extract.allow_unsafe_paths {
-                self.config.extract.allow_unsafe_paths = allow;
-            }
-        }
-        if let Some(engine) = patch.engine {
-            if let Some(bundle) = engine.bundle_cli {
-                self.config.engine.bundle_cli = bundle;
-            }
-            if let Some(path) = engine.cli_path {
-                self.config.engine.cli_path = path;
-            }
-        }
-        if let Some(recent) = patch.recent {
-            if let Some(paths) = recent.paths {
-                self.config.recent.paths = paths;
-            }
-        }
+        self.config = next;
         Ok(self.config.clone())
+    }
+
+    pub fn clear_local_index_cache(&self) -> Result<i64> {
+        let Some(dir) = self.local_index_dir() else {
+            return Err(ApiError::internal(
+                "no local-index-v1 path configured for this process",
+            ));
+        };
+        wipe_local_index_cache(&dir)
     }
 
     pub fn register_associations(&self) -> Result<()> {

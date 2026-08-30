@@ -4,9 +4,10 @@ use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::catalog::FakeCatalog;
+use crate::config::{load_config_or_default, PersistPaths};
 use crate::events::Event;
 use crate::parse::rgui_fake_enabled;
-use crate::types::{Config, Overwrite};
+use crate::types::{Config, IndexPolicy, Overwrite};
 
 #[derive(Debug)]
 pub struct SessionState {
@@ -81,6 +82,8 @@ pub struct NativeApp {
     pub(crate) config: Config,
     pub(crate) events: Vec<Event>,
     pub(crate) last_index_debug_log: Option<String>,
+    pub(crate) persist: Option<PersistPaths>,
+    pub(crate) sibling_writable_override: Option<bool>,
 }
 
 impl NativeApp {
@@ -98,7 +101,7 @@ impl NativeApp {
     }
 
     fn with_flags(test_mode: bool, honor_rgui_fake: bool) -> Self {
-        Self {
+        let mut app = Self {
             test_mode,
             honor_rgui_fake,
             sessions: HashMap::new(),
@@ -108,6 +111,72 @@ impl NativeApp {
             config: Config::default_in_memory(),
             events: Vec::new(),
             last_index_debug_log: None,
+            persist: None,
+            sibling_writable_override: None,
+        };
+        // napi production builds load the platform config. `cargo test` must not
+        // read or write the developer's real config.toml / local-index-v1.
+        if !test_mode && !cfg!(test) {
+            app.install_persist(PersistPaths::platform());
+        }
+        app
+    }
+
+    pub fn with_persist(paths: PersistPaths) -> Self {
+        let mut app = Self::with_flags(false, false);
+        app.install_persist(paths);
+        app
+    }
+
+    #[cfg(test)]
+    pub fn for_test_persist(paths: PersistPaths) -> Self {
+        let mut app = Self::for_test();
+        app.install_persist(paths);
+        app
+    }
+
+    fn install_persist(&mut self, paths: PersistPaths) {
+        self.config = load_config_or_default(&paths.config_toml);
+        self.persist = Some(paths);
+    }
+
+    pub fn persist_paths(&self) -> Option<&PersistPaths> {
+        self.persist.as_ref()
+    }
+
+    pub fn local_index_dir(&self) -> Option<PathBuf> {
+        self.persist.as_ref().map(|p| p.local_index_dir.clone())
+    }
+
+    #[cfg(test)]
+    pub fn set_sibling_writable(&mut self, writable: Option<bool>) {
+        self.sibling_writable_override = writable;
+    }
+
+    pub fn sibling_dir_is_writable(&self, source: &str) -> bool {
+        if let Some(override_writable) = self.sibling_writable_override {
+            return override_writable;
+        }
+        crate::config::sibling_dir_writable(source)
+    }
+
+    pub fn remembered_volume(&self, source: &str) -> bool {
+        if !self.config.index.remember_unwritable_volumes {
+            return false;
+        }
+        let key = crate::config::volume_key_for_source(source);
+        self.config
+            .index
+            .remembered_volumes
+            .iter()
+            .any(|v| v == &key)
+    }
+
+    pub fn effective_open_policy(&self, policy: IndexPolicy, source: &str) -> IndexPolicy {
+        if policy == IndexPolicy::Sibling && self.remembered_volume(source) {
+            IndexPolicy::UserCache
+        } else {
+            policy
         }
     }
 

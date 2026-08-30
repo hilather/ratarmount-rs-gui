@@ -83,6 +83,7 @@ interface Config {
     recreate: Recreate
     localCacheBytes: number
     rememberUnwritableVolumes: boolean
+    rememberedVolumes: string[]     // archive parent dirs; W5 until G4 volume ids
   }
   preview: {
     maxBytes: number            // default 8 MiB; native clamps to 64 MiB
@@ -173,6 +174,8 @@ pickDir(): Promise<string | null>
 
 getConfig(): Promise<Config>
 setConfig(patch: Partial<Config>): Promise<Config>
+/** Wipes `local-index-v1` only. Never sibling sidecars or the legacy CLI cache parent. */
+clearLocalIndexCache(): Promise<{ removed: number }>
 
 registerAssociations(): Promise<void>
 unregisterAssociations(): Promise<void>

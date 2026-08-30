@@ -1,9 +1,6 @@
 use crate::error::{ApiError, Result};
-use crate::types::Overwrite;
-#[cfg(any(test, feature = "napi-addon"))]
-use crate::types::{ConfigOverwrite, IndexPolicy, Recreate};
+use crate::types::{ConfigOverwrite, IndexPolicy, Overwrite, Recreate};
 
-#[cfg(any(test, feature = "napi-addon"))]
 pub fn parse_policy(value: &str) -> Result<IndexPolicy> {
     match value {
         "sibling" => Ok(IndexPolicy::Sibling),
@@ -17,12 +14,10 @@ pub fn parse_policy(value: &str) -> Result<IndexPolicy> {
     }
 }
 
-#[cfg(any(test, feature = "napi-addon"))]
 pub fn policy_str(policy: IndexPolicy) -> &'static str {
     policy.as_str()
 }
 
-#[cfg(any(test, feature = "napi-addon"))]
 pub fn parse_recreate(value: &str) -> Result<Recreate> {
     match value {
         "never" => Ok(Recreate::Never),
@@ -32,7 +27,6 @@ pub fn parse_recreate(value: &str) -> Result<Recreate> {
     }
 }
 
-#[cfg(any(test, feature = "napi-addon"))]
 pub fn recreate_str(recreate: Recreate) -> &'static str {
     match recreate {
         Recreate::Never => "never",
@@ -41,7 +35,6 @@ pub fn recreate_str(recreate: Recreate) -> &'static str {
     }
 }
 
-#[cfg(any(test, feature = "napi-addon"))]
 pub fn parse_config_overwrite(value: &str) -> Result<ConfigOverwrite> {
     match value {
         "ask" => Ok(ConfigOverwrite::Ask),
@@ -53,7 +46,6 @@ pub fn parse_config_overwrite(value: &str) -> Result<ConfigOverwrite> {
     }
 }
 
-#[cfg(any(test, feature = "napi-addon"))]
 pub fn config_overwrite_str(overwrite: ConfigOverwrite) -> &'static str {
     match overwrite {
         ConfigOverwrite::Ask => "ask",

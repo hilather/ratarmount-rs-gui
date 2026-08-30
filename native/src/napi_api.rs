@@ -268,6 +268,7 @@ pub struct JsIndexConfig {
     pub recreate: String,
     pub local_cache_bytes: i64,
     pub remember_unwritable_volumes: bool,
+    pub remembered_volumes: Vec<String>,
 }
 
 #[napi(object)]
@@ -312,6 +313,7 @@ impl From<Config> for JsConfig {
                 recreate: recreate_str(cfg.index.recreate).to_string(),
                 local_cache_bytes: cfg.index.local_cache_bytes,
                 remember_unwritable_volumes: cfg.index.remember_unwritable_volumes,
+                remembered_volumes: cfg.index.remembered_volumes,
             },
             preview: JsPreviewConfig {
                 max_bytes: cfg.preview.max_bytes,
@@ -341,6 +343,7 @@ pub struct JsIndexConfigPatch {
     pub recreate: Option<String>,
     pub local_cache_bytes: Option<i64>,
     pub remember_unwritable_volumes: Option<bool>,
+    pub remembered_volumes: Option<Vec<String>>,
 }
 
 #[napi(object)]
@@ -391,6 +394,7 @@ fn patch_from_js(patch: JsConfigPatch) -> crate::error::Result<ConfigPatch> {
                 recreate: index.recreate.as_deref().map(parse_recreate).transpose()?,
                 local_cache_bytes: index.local_cache_bytes,
                 remember_unwritable_volumes: index.remember_unwritable_volumes,
+                remembered_volumes: index.remembered_volumes,
             }),
         },
         preview: patch.preview.map(|preview| PreviewConfigPatch {
@@ -718,6 +722,19 @@ pub fn get_config(env: Env) -> Result<JsConfig> {
 pub fn set_config(env: Env, patch: JsConfigPatch) -> Result<JsConfig> {
     let patch = patch_from_js(patch).map_err(|e| napi_err(env, e))?;
     with_app(env, |app| app.set_config(patch).map(JsConfig::from))
+}
+
+#[napi(object)]
+pub struct JsCacheClearResult {
+    pub removed: i64,
+}
+
+#[napi]
+pub fn clear_local_index_cache(env: Env) -> Result<JsCacheClearResult> {
+    with_app(env, |app| {
+        app.clear_local_index_cache()
+            .map(|removed| JsCacheClearResult { removed })
+    })
 }
 
 #[napi]
