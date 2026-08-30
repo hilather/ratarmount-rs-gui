@@ -330,6 +330,21 @@ impl NativeApp {
         }
     }
 
+    pub fn mark_extract_failed(&mut self, job_id: u32, err: ApiError) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.status != JobStatus::Running {
+                return;
+            }
+            job.status = JobStatus::Failed;
+            self.emit(Event::JobFailed {
+                job_id,
+                code: err.code.as_str().to_string(),
+                message: err.message,
+                retryable: err.code.retryable(),
+            });
+        }
+    }
+
     pub fn emit_extract_progress(
         &mut self,
         job_id: u32,
@@ -604,15 +619,7 @@ fn plan_dest_conflicts(
 }
 
 fn fail_extract_job(app: &mut NativeApp, job_id: u32, err: ApiError) -> Result<u32> {
-    if let Some(job) = app.jobs.get_mut(&job_id) {
-        job.status = JobStatus::Failed;
-    }
-    app.emit(Event::JobFailed {
-        job_id,
-        code: err.code.as_str().to_string(),
-        message: err.message,
-        retryable: err.code.retryable(),
-    });
+    app.mark_extract_failed(job_id, err);
     Ok(job_id)
 }
 

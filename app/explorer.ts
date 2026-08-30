@@ -1106,6 +1106,11 @@ export class ExplorerController {
     retryable: boolean
   }): void {
     if (this.extractInFlight || this.extractJobId === event.jobId) {
+      const status = this.snapshot.extractJob?.status
+      if (status === 'cancelled' || status === 'succeeded') {
+        this.extractInFlight = false
+        return
+      }
       this.extractJobId = event.jobId
       this.applyExtractFailed(new CommandError(event.code, event.message, event.retryable))
       return

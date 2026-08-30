@@ -683,17 +683,7 @@ fn run_extract_job_unlocked(job_id: u32) {
                 app.emit_extract_progress(job_id, files_done, files_hint, bytes_out, current);
             }
             crate::commands::ExtractStep::Cancelled => app.mark_extract_cancelled(job_id),
-            crate::commands::ExtractStep::Failed(err) => {
-                if let Some(job) = app.jobs.get_mut(&job_id) {
-                    job.status = crate::state::JobStatus::Failed;
-                }
-                app.emit(crate::events::Event::JobFailed {
-                    job_id,
-                    code: err.code.as_str().to_string(),
-                    message: err.message,
-                    retryable: err.code.retryable(),
-                });
-            }
+            crate::commands::ExtractStep::Failed(err) => app.mark_extract_failed(job_id, err),
             crate::commands::ExtractStep::Succeeded => {
                 app.mark_extract_succeeded(job_id, session_id);
             }

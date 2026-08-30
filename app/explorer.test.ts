@@ -627,6 +627,9 @@ test('progress cancel fires view handler', async () => {
     current: '/dir-00',
   })
   expect(controller.getSnapshot().extractJob?.status).toBe('cancelled')
+  fake.failExtract(jobId, 'Busy', 'destination is busy', true)
+  expect(controller.getSnapshot().extractJob?.status).toBe('cancelled')
+  expect(queryByTestId(renderView(controller.getSnapshot()), 'progress-retry')).toBeNull()
 })
 
 test('jobFailed.retryable shows Retry on the progress panel', async () => {

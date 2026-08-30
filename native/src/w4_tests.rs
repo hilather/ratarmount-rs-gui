@@ -204,6 +204,14 @@ fn extract_hold_then_cancel() {
             .any(|e| matches!(e, Event::ExtractProgress { job_id: id, .. } if *id == job_id)),
         "cancelled jobs must not emit extractProgress"
     );
+    app.mark_extract_failed(job_id, crate::error::ApiError::not_writable("late write"));
+    let late_fail = app.take_events();
+    assert!(
+        !late_fail
+            .iter()
+            .any(|e| matches!(e, Event::JobFailed { job_id: id, .. } if *id == job_id)),
+        "cancelled jobs must not emit jobFailed"
+    );
 }
 
 #[test]
