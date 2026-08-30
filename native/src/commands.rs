@@ -11,7 +11,7 @@ use crate::paths::{
     discard_secret, is_encrypted_source, is_fixture_source, member_dest_path,
     normalize_archive_path, normalize_member_path,
 };
-use crate::state::{JobKind, JobStatus, NativeApp};
+use crate::state::{JobKind, JobStatus, NativeApp, PendingExtract, PendingExtractItem};
 use crate::types::{
     Config, ConfigPatch, DirEnt, DirPage, ExtractConflict, ExtractOpts, ExtractPlan,
     ExtractPlanOpts, FindOpts, FindPage, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, Overwrite,
@@ -207,6 +207,14 @@ impl NativeApp {
     }
 
     pub fn extract(&mut self, opts: ExtractOpts) -> Result<u32> {
+        let job_id = self.begin_extract(opts)?;
+        self.run_extract_job(job_id);
+        Ok(job_id)
+    }
+
+    /// Validate, plan dest paths, and allocate `jobId`. PathEscape is a command
+    /// error (no job). Dest writes run in `run_extract_job`.
+    pub fn begin_extract(&mut self, opts: ExtractOpts) -> Result<u32> {
         let overwrite = parse_native_overwrite(&opts.overwrite)?;
         let session_id = opts.session_id;
         let _ = self.session(session_id)?;
@@ -254,10 +262,10 @@ impl NativeApp {
         }
 
         let dest_root = PathBuf::from(&opts.dest_dir);
-        let planned = {
+        let items = {
             let session = self.session(session_id)?;
             let files = session.catalog.extract_files(&opts.members);
-            let mut planned = Vec::with_capacity(files.len());
+            let mut items = Vec::with_capacity(files.len());
             for file in files {
                 match member_dest_path(&dest_root, &file.path) {
                     Ok(dest) => {
@@ -266,7 +274,7 @@ impl NativeApp {
                             .body(&file.path)
                             .map(|b| b.to_vec())
                             .unwrap_or_else(|| format!("rgui-fake:{}\n", file.path).into_bytes());
-                        planned.push(PlannedExtract {
+                        items.push(PendingExtractItem {
                             member: file.path,
                             dest,
                             body,
@@ -279,20 +287,45 @@ impl NativeApp {
                     }
                 }
             }
-            planned
+            items
         };
 
-        let (job_id, cancel) = self.alloc_job(JobKind::Extract, Some(session_id));
-        let files_hint = planned.len() as i64;
+        let (job_id, _) = self.alloc_job(JobKind::Extract, Some(session_id));
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            job.pending_extract = Some(PendingExtract { overwrite, items });
+        }
+        Ok(job_id)
+    }
+
+    /// Write planned members. No-op if the job has no pending dest work.
+    pub fn run_extract_job(&mut self, job_id: u32) {
+        let (overwrite, items, cancel, session_id) = {
+            let Some(job) = self.jobs.get_mut(&job_id) else {
+                return;
+            };
+            if job.status != JobStatus::Running {
+                return;
+            }
+            let Some(pending) = job.pending_extract.take() else {
+                return;
+            };
+            (
+                pending.overwrite,
+                pending.items,
+                job.cancel.clone(),
+                job.session_id,
+            )
+        };
+        let files_hint = items.len() as i64;
         let mut files_done = 0_i64;
         let mut bytes_out = 0_i64;
-        for item in planned {
+        for item in items {
             if cancel.load(Ordering::SeqCst) {
                 if let Some(job) = self.jobs.get_mut(&job_id) {
                     job.status = JobStatus::Cancelled;
                 }
                 self.emit(Event::JobCancelled { job_id });
-                return Ok(job_id);
+                return;
             }
             if item.dest.exists() && overwrite == Overwrite::Skip {
                 files_done += 1;
@@ -307,11 +340,12 @@ impl NativeApp {
             }
             if let Some(parent) = item.dest.parent() {
                 if let Err(err) = fs::create_dir_all(parent) {
-                    return fail_extract_job(
+                    let _ = fail_extract_job(
                         self,
                         job_id,
                         ApiError::not_writable(format!("create dest: {err}")),
                     );
+                    return;
                 }
             }
             match fs::write(&item.dest, &item.body) {
@@ -327,22 +361,19 @@ impl NativeApp {
                     });
                 }
                 Err(err) => {
-                    return fail_extract_job(
+                    let _ = fail_extract_job(
                         self,
                         job_id,
                         ApiError::not_writable(format!("write dest: {err}")),
                     );
+                    return;
                 }
             }
         }
         if let Some(job) = self.jobs.get_mut(&job_id) {
             job.status = JobStatus::Succeeded;
         }
-        self.emit(Event::JobSucceeded {
-            job_id,
-            session_id: Some(session_id),
-        });
-        Ok(job_id)
+        self.emit(Event::JobSucceeded { job_id, session_id });
     }
 
     pub fn cancel(&mut self, job_id: u32) -> Result<()> {
@@ -476,12 +507,6 @@ impl NativeApp {
 pub enum FuseMountResult {
     Mountpoint { mountpoint: String },
     Error { error: String },
-}
-
-struct PlannedExtract {
-    member: String,
-    dest: PathBuf,
-    body: Vec<u8>,
 }
 
 fn plan_dest_conflicts(

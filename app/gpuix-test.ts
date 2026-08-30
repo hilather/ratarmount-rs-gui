@@ -19,6 +19,15 @@ export function queryByTestId(node: ReactNode, testId: string): ReactElement | n
   return null
 }
 
+export function changeByTestId(node: ReactNode, testId: string, value: string): void {
+  const el = getByTestId(node, testId)
+  const onChange = (el.props as { onChange?: (e: { value: string }) => void }).onChange
+  if (!onChange) {
+    throw new Error(`No onChange handler on testId="${testId}"`)
+  }
+  onChange({ value })
+}
+
 export function clickByTestId(node: ReactNode, testId: string, event: object = {}): void {
   const el = getByTestId(node, testId)
   const onClick = (el.props as { onClick?: (e: object) => void }).onClick

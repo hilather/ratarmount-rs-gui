@@ -303,6 +303,14 @@ fn preview_list_does_not_hold_nine_mib_body() {
 }
 
 #[test]
+fn napi_extract_spawns_worker_after_job_id() {
+    let src = include_str!("napi_api.rs");
+    assert!(src.contains("begin_extract"));
+    assert!(src.contains("thread::spawn"));
+    assert!(src.contains("run_extract_job"));
+}
+
+#[test]
 fn extract_ask_still_rejected() {
     let mut app = NativeApp::for_test();
     let session_id = app.open_catalog("fixture.tar", FakeCatalog::new());

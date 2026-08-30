@@ -229,6 +229,7 @@ export class ExplorerController {
     members: string[]
     overwrite: NativeOverwrite
   } | null = null
+  private openAfterExtract: { destDir: string; member: string } | null = null
 
   constructor(options: ExplorerOptions = {}) {
     const limit = options.listLimit ?? LIST_LIMIT_DEFAULT
@@ -381,6 +382,7 @@ export class ExplorerController {
   }
 
   dismissDialog(): void {
+    this.openAfterExtract = null
     this.patch({ dialog: { kind: 'none' } })
   }
 
@@ -626,7 +628,11 @@ export class ExplorerController {
     const selectedIndex = opts.append
       ? Math.min(this.snapshot.selectedIndex, Math.max(0, entries.length - 1))
       : 0
-    const selectedPaths = opts.append ? this.snapshot.selectedPaths : []
+    const selectedPaths = opts.append
+      ? this.snapshot.selectedPaths
+      : entries[selectedIndex]?.path
+        ? [entries[selectedIndex].path]
+        : []
     this.patch({
       status: 'ready',
       listing: false,
@@ -671,6 +677,31 @@ export class ExplorerController {
     }
   }
 
+  async extractAllTo(): Promise<void> {
+    if (this.snapshot.status === 'opening') {
+      return
+    }
+    if (!(await this.ensureNative())) {
+      return
+    }
+    const native = this.native
+    if (!native || this.sessionId == null || this.snapshot.archivePath == null) {
+      return
+    }
+    if (!this.snapshot.nativeReady) {
+      return
+    }
+    try {
+      const destDir = await native.pickDir()
+      if (destDir == null) {
+        return
+      }
+      await this.planAndExtract(destDir, [])
+    } catch (err) {
+      this.handleExtractError(err)
+    }
+  }
+
   async extractOpenWithSystem(): Promise<void> {
     const path = this.snapshot.previewPath
     if (path == null) {
@@ -688,8 +719,10 @@ export class ExplorerController {
       if (destDir == null) {
         return
       }
-      await this.startExtract(destDir, [path], 'replace')
+      this.openAfterExtract = { destDir, member: path }
+      await this.planAndExtract(destDir, [path])
     } catch (err) {
+      this.openAfterExtract = null
       this.handleExtractError(err)
     }
   }
@@ -749,7 +782,11 @@ export class ExplorerController {
   }
 
   private selectedMembers(): string[] {
-    return this.snapshot.selectedPaths
+    if (this.snapshot.selectedPaths.length > 0) {
+      return this.snapshot.selectedPaths
+    }
+    const ent = this.snapshot.entries[this.snapshot.selectedIndex]
+    return ent ? [ent.path] : []
   }
 
   private async planAndExtract(destDir: string, members: string[]): Promise<void> {
@@ -839,12 +876,18 @@ export class ExplorerController {
         retryable: false,
       },
     })
-    const { jobId } = await native.extract({
-      sessionId,
-      members,
-      destDir,
-      overwrite,
-    })
+    let jobId: number
+    try {
+      ;({ jobId } = await native.extract({
+        sessionId,
+        members,
+        destDir,
+        overwrite,
+      }))
+    } catch (err) {
+      this.applyExtractFailed(commandErrorFromUnknown(err))
+      throw err
+    }
     this.extractJobId = jobId
     const finished = this.finishedJobs.get(jobId)
     if (finished) {
@@ -867,6 +910,7 @@ export class ExplorerController {
           retryable: false,
         },
       })
+      void this.maybeOpenExtracted()
       return
     }
     const current = this.snapshot.extractJob
@@ -875,19 +919,40 @@ export class ExplorerController {
     }
   }
 
+  private async maybeOpenExtracted(): Promise<void> {
+    const pending = this.openAfterExtract
+    this.openAfterExtract = null
+    if (pending == null || !this.native) {
+      return
+    }
+    try {
+      const cfg = await this.native.getConfig()
+      if (!cfg.preview.openLargeWithSystem) {
+        return
+      }
+      const rel = pending.member.replace(/^\//, '')
+      const dest = `${pending.destDir.replace(/\/$/, '')}/${rel}`
+      spawnOpenWithSystem(dest)
+    } catch {
+      // Extract already succeeded.
+    }
+  }
+
   private applyExtractFailed(err: CommandError): void {
     this.extractInFlight = false
     const current = this.snapshot.extractJob
     this.patch({
-      extractJob: current
-        ? {
-            ...current,
-            status: 'failed',
-            error: err.message,
-            errorCode: err.code,
-            retryable: err.retryable,
-          }
-        : current,
+      extractJob: {
+        jobId: current?.jobId ?? 0,
+        filesDone: current?.filesDone ?? 0,
+        filesHint: current?.filesHint ?? null,
+        bytesOut: current?.bytesOut ?? 0,
+        current: current?.current ?? null,
+        status: 'failed',
+        error: err.message,
+        errorCode: err.code,
+        retryable: err.retryable,
+      },
       ...(err.code === 'PathEscape'
         ? { dialog: { kind: 'path-escape' as const, message: err.message } }
         : {}),
@@ -941,13 +1006,10 @@ export class ExplorerController {
 
   private handleExtractError(err: unknown): void {
     const ce = commandErrorFromUnknown(err)
-    if (ce.code === 'PathEscape') {
-      this.patch({
-        dialog: { kind: 'path-escape', message: ce.message },
-      })
-      return
+    this.applyExtractFailed(ce)
+    if (ce.code !== 'PathEscape') {
+      this.setError(err)
     }
-    this.setError(err)
   }
 
   private async sessionFromOpen(outcome: OpenResult): Promise<SessionId> {
@@ -991,6 +1053,7 @@ export class ExplorerController {
           retryable: false,
         },
       })
+      void this.maybeOpenExtracted()
       return
     }
     const sessionId = event.sessionId ?? null
@@ -1092,6 +1155,7 @@ export class ExplorerController {
     this.extractJobId = null
     this.extractInFlight = false
     this.lastExtract = null
+    this.openAfterExtract = null
     if (sessionId != null && this.native) {
       await this.native.close(sessionId)
     }
@@ -1148,5 +1212,17 @@ export class ExplorerController {
     for (const listener of this.listeners) {
       listener()
     }
+  }
+}
+
+function spawnOpenWithSystem(path: string): void {
+  if (process.argv.some((arg) => arg === 'test' || arg.endsWith('.test.ts'))) {
+    return
+  }
+  try {
+    const cmd = process.platform === 'darwin' ? 'open' : 'xdg-open'
+    void Bun.spawn([cmd, path], { stdout: 'ignore', stderr: 'ignore', stdin: 'ignore' })
+  } catch {
+    // Extract already succeeded.
   }
 }

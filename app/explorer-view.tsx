@@ -29,6 +29,7 @@ export type ExplorerHandlers = {
   onOpen(): void
   onClose(): void
   onExtract(): void
+  onExtractAll(): void
   onCrumb(path: string): void
   onRowClick(index: number, clickCount: number, mods?: ClickMods): void
   onKey(key: string, mods?: ClickMods): void
@@ -62,6 +63,9 @@ export function explorerHandlers(controller: ExplorerController): ExplorerHandle
     onExtract: () => {
       void controller.extractTo()
     },
+    onExtractAll: () => {
+      void controller.extractAllTo()
+    },
     onCrumb: (path) => {
       void controller.enterPath(path)
     },
@@ -69,6 +73,9 @@ export function explorerHandlers(controller: ExplorerController): ExplorerHandle
       controller.onRowClick(index, clickCount, mods)
     },
     onKey: (key, mods) => {
+      if (key === 'escape') {
+        clearPasswordDraft()
+      }
       controller.handleKey(key, mods)
     },
     onVisibleRange: (start, end) => {
@@ -90,6 +97,7 @@ export function explorerHandlers(controller: ExplorerController): ExplorerHandle
       void controller.chooseOverwrite('replace')
     },
     onDismissDialog: () => {
+      clearPasswordDraft()
       controller.dismissDialog()
     },
     onPasswordSubmit: (password) => {
@@ -106,6 +114,7 @@ export function ExplorerView({
   onOpen,
   onClose,
   onExtract,
+  onExtractAll,
   onCrumb,
   onRowClick,
   onKey,
@@ -175,6 +184,12 @@ export function ExplorerView({
           testId="extract"
           label="Extract to…"
           onClick={onExtract}
+          disabled={!model.nativeReady || !hasSession || model.status === 'opening'}
+        />
+        <ToolButton
+          testId="extract-all"
+          label="Extract all"
+          onClick={onExtractAll}
           disabled={!model.nativeReady || !hasSession || model.status === 'opening'}
         />
       </div>
@@ -648,6 +663,10 @@ function DialogHost({
 
 const passwordDraft = { current: '' }
 
+function clearPasswordDraft(): void {
+  passwordDraft.current = ''
+}
+
 function PasswordModal({
   onSubmit,
   onCancel,
@@ -666,12 +685,19 @@ function PasswordModal({
         }}
       />
       <div style={{ flexDirection: 'row', gap: 8, justifyContent: 'flex-end' }}>
-        <ToolButton testId="password-cancel" label="Cancel" onClick={onCancel} />
+        <ToolButton
+          testId="password-cancel"
+          label="Cancel"
+          onClick={() => {
+            clearPasswordDraft()
+            onCancel()
+          }}
+        />
         <div
           testId="password-submit"
           onClick={(event: EventPayload) => {
             const password = event.value ?? passwordDraft.current
-            passwordDraft.current = ''
+            clearPasswordDraft()
             onSubmit(password)
           }}
           style={{

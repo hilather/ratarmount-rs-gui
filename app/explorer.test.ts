@@ -25,12 +25,20 @@ import {
   FAKE_ROOT_TOTAL,
   NINE_MIB,
 } from './fake-native'
-import { clickByTestId, collectTestIds, getByTestId, keyDownByTestId, queryByTestId } from './gpuix-test'
+import {
+  changeByTestId,
+  clickByTestId,
+  collectTestIds,
+  getByTestId,
+  keyDownByTestId,
+  queryByTestId,
+} from './gpuix-test'
 
 const noop: ExplorerHandlers = {
   onOpen() {},
   onClose() {},
   onExtract() {},
+  onExtractAll() {},
   onCrumb() {},
   onRowClick() {},
   onKey() {},
@@ -462,6 +470,7 @@ test('Extract to uses pickDir, extractPlan, and skip|replace only', async () => 
   )
   expect(fake.extractCalls[0]?.overwrite).not.toBe('ask')
   expect(fake.extractCalls[0]?.destDir).toBe('/tmp/out')
+  expect(fake.extractCalls[0]?.members).toEqual(['/dir-00'])
   const after = renderView(controller.getSnapshot(), explorerHandlers(controller))
   expect(getByTestId(after, 'progress')).toBeTruthy()
 })
@@ -481,7 +490,7 @@ test('extract-all confirm when extractPlan files exceed 1000', async () => {
   controller.setNative(fake)
   await controller.openPicked()
   const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
-  clickByTestId(tree, 'extract')
+  clickByTestId(tree, 'extract-all')
   await waitFor(controller, (s) => s.dialog.kind === 'confirm-extract')
   expect(fake.extractCalls).toHaveLength(0)
   expect(controller.getSnapshot().entries.length).toBe(LIST_LIMIT_DEFAULT)
@@ -511,7 +520,7 @@ test('overwrite dialog uses the extractPlan sample, not 1k paths', async () => {
   controller.setNative(fake)
   await controller.openPicked()
   const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
-  clickByTestId(tree, 'extract')
+  clickByTestId(tree, 'extract-all')
   await waitFor(controller, (s) => s.dialog.kind === 'confirm-extract')
   const confirm = renderView(controller.getSnapshot(), explorerHandlers(controller))
   clickByTestId(confirm, 'confirm-extract-ok')
@@ -564,6 +573,10 @@ test('default 8 MiB preview cap skips a 9 MiB member', async () => {
   const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
   expect(getByTestId(tree, 'preview-skipped')).toBeTruthy()
   expect(getByTestId(tree, 'extract-open-system')).toBeTruthy()
+  clickByTestId(tree, 'extract-open-system')
+  await waitFor(controller, (s) => s.extractJob?.status === 'succeeded' || s.dialog.kind === 'overwrite')
+  expect(fake.extractPlanCalls.length).toBeGreaterThan(0)
+  expect(fake.extractCalls.every((c) => c.overwrite !== ('ask' as typeof c.overwrite))).toBe(true)
 })
 
 test('progress cancel fires view handler', async () => {
@@ -609,8 +622,11 @@ test('PathEscape is surfaced and extract is not written', async () => {
   clickByTestId(tree, 'extract')
   await waitFor(controller, (s) => s.dialog.kind === 'path-escape')
   expect(fake.written.size).toBe(0)
+  expect(controller.getSnapshot().extractJob?.status).not.toBe('running')
+  expect(controller.getSnapshot().extractJob?.status).toBe('failed')
   const dialog = renderView(controller.getSnapshot(), explorerHandlers(controller))
   expect(getByTestId(dialog, 'path-escape')).toBeTruthy()
+  expect(queryByTestId(dialog, 'progress-cancel')).toBeNull()
 })
 
 test('password modal retries open without storing the secret on the snapshot', async () => {
@@ -631,6 +647,31 @@ test('password modal retries open without storing the secret on the snapshot', a
   await waitFor(controller, (s) => s.status === 'ready' && s.entries.length === LIST_LIMIT_DEFAULT)
   expect(JSON.stringify(controller.getSnapshot())).not.toContain(FAKE_ENCRYPTED_PASSWORD)
   expect(fake.openCalls[1]?.password).toBe(FAKE_ENCRYPTED_PASSWORD)
+})
+
+test('password cancel does not resubmit the previous secret on Unlock', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/encrypted.tar',
+    openMode: 'bad-password',
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(tree, 'open')
+  await waitFor(controller, (s) => s.dialog.kind === 'password')
+  const typed = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  changeByTestId(typed, 'password-input', FAKE_ENCRYPTED_PASSWORD)
+  clickByTestId(typed, 'password-cancel')
+  expect(controller.getSnapshot().dialog.kind).toBe('none')
+  const idle = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(idle, 'open')
+  await waitFor(controller, (s) => s.dialog.kind === 'password')
+  const again = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  clickByTestId(again, 'password-submit')
+  await waitFor(controller, (s) => s.dialog.kind === 'password' || s.status === 'error')
+  const last = fake.openCalls[fake.openCalls.length - 1]
+  expect(last?.password ?? '').not.toBe(FAKE_ENCRYPTED_PASSWORD)
+  expect(JSON.stringify(controller.getSnapshot())).not.toContain(FAKE_ENCRYPTED_PASSWORD)
 })
 
 test('Extract is disabled until native is ready', () => {

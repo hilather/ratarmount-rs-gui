@@ -4,7 +4,7 @@ A native GPU-rendered archive explorer that indexes and browses multi-gigabyte T
 
 GPUIX (React + Zed GPUI) in the UI process. `ratarmount-session` in-process for index / list / extract. No Electron. No webview. Archive bytes never enter the JavaScript heap.
 
-**Status:** W3 explorer chrome on the W1 fake catalog. W2 Session wiring is feature-gated (`session`) and blocked on engine G0–G2 (`ratarmount-session` is not in the engine tree). `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount` with Open/Close, breadcrumbs, and a paged virtual list. Native commands (`pickFile`, `list`, …) use an in-memory catalog unless a real Session is linked.
+**Status:** W4 extract / preview / jobs on the W1 fake catalog. W2 Session wiring is feature-gated (`session`) and blocked on engine G0–G2 (`ratarmount-session` is not in the engine tree). `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount` with Open/Close, Extract to…, a preview pane, and a paged virtual list. Native commands (`pickFile`, `list`, `extract`, `preview`, …) use an in-memory catalog unless a real Session is linked.
 
 Chrome/Electron `ArrayBuffer` and wasm32 linear memory both cap around 2–4 GiB — that is the failure mode this product exists to avoid. The desktop GPUIX build is in scope **only if** React never sees archive bytes. The GPUIX browser/`bun run web` target is out of scope.
 
@@ -61,7 +61,7 @@ cargo run -p native -- --self-test
 cd native && bun install && bun run build
 ```
 
-Window: 1100×720, title `ratarmount`. Open an archive from the toolbar (file picker). Breadcrumbs, a paged `<virtual-list>` (name/size/mtime), and a status bar show the current directory. Enter a folder with Enter or double-click; Backspace goes up. Listing stays page-sized (default 200, max 500); it does not dump the catalog into React state.
+Window: 1100×720, title `ratarmount`. Open an archive from the toolbar (file picker). Breadcrumbs, a paged `<virtual-list>` (name/size/mtime), a preview pane, and a status bar show the current directory. Extract to… writes selected members to a picked folder (`skip`/`replace`; `'ask'` is a UI dialog). Members over the default 8 MiB preview cap are skipped with “Extract and open with system.” Encrypted archives prompt for a password on `BadPassword` (the secret is not stored). Enter a folder with Enter or double-click; Backspace goes up. Listing stays page-sized (default 200, max 500); it does not dump the catalog into React state.
 
 Build the napi addon so Open can call `pickFile`/`list`. `bun run dev` still starts if the `.node` is missing and surfaces that on Open. Set `RGUI_FAKE=1` so `open` accepts any path and serves the fake catalog.
 

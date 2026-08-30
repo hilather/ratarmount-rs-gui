@@ -648,15 +648,22 @@ pub fn extract_plan(env: Env, opts: JsExtractPlanOpts) -> Result<JsExtractPlan> 
 
 #[napi]
 pub fn extract(env: Env, opts: JsExtractOpts) -> Result<JsJobId> {
-    with_app(env, |app| {
-        app.extract(ExtractOpts {
+    let job_id = with_app(env, |app| {
+        app.begin_extract(ExtractOpts {
             session_id: opts.session_id,
             members: opts.members,
             dest_dir: opts.dest_dir,
             overwrite: opts.overwrite,
         })
-        .map(|job_id| JsJobId { job_id })
-    })
+    })?;
+    std::thread::spawn(move || {
+        let mut app = global_app().lock().expect("native state mutex poisoned");
+        app.run_extract_job(job_id);
+        let events = app.take_events();
+        drop(app);
+        dispatch_events(events);
+    });
+    Ok(JsJobId { job_id })
 }
 
 #[napi]
