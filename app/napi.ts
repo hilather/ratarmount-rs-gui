@@ -3,49 +3,7 @@ export type JobId = number
 export type Cursor = string
 
 export type IndexPolicy = 'sibling' | 'user-cache' | 'explicit' | 'temp' | 'memory'
-export type PersistablePolicy = Exclude<IndexPolicy, 'memory'>
 export type Recreate = 'never' | 'if-invalid' | 'always'
-export type ConfigOverwrite = 'ask' | 'skip' | 'replace'
-
-export const PREVIEW_DEFAULT_BYTES = 8 * 1024 * 1024
-export const PREVIEW_CEILING_BYTES = 64 * 1024 * 1024
-
-export interface Config {
-  index: {
-    policy: PersistablePolicy
-    explicitPath: string
-    extraDirs: string[]
-    recreate: Recreate
-    localCacheBytes: number
-    rememberUnwritableVolumes: boolean
-    rememberedVolumes: string[]
-  }
-  preview: {
-    maxBytes: number
-    openLargeWithSystem: boolean
-  }
-  extract: {
-    overwrite: ConfigOverwrite
-    allowUnsafePaths: boolean
-  }
-  engine: {
-    bundleCli: boolean
-    cliPath: string
-  }
-  recent: {
-    paths: string[]
-  }
-}
-
-export type ConfigPatch = {
-  index?: Omit<Partial<Config['index']>, 'policy'> & { policy?: IndexPolicy }
-  preview?: Partial<Config['preview']>
-  extract?: Partial<Config['extract']>
-  engine?: Partial<Config['engine']>
-  recent?: Partial<Config['recent']>
-}
-
-export type CacheClearResult = { removed: number }
 
 export interface DirEnt {
   name: string
@@ -113,6 +71,7 @@ export interface ExtractProgressEvent {
 }
 
 export type NativeOverwrite = 'skip' | 'replace'
+export type ConfigOverwrite = 'ask' | 'skip' | 'replace'
 
 export interface ExtractConflict {
   member: string
@@ -150,6 +109,40 @@ export interface ExtractOpts {
   overwrite: NativeOverwrite
 }
 
+export type PersistablePolicy = Exclude<IndexPolicy, 'memory'>
+
+export const PREVIEW_DEFAULT_BYTES = 8 * 1024 * 1024
+
+export const PREVIEW_CEILING_BYTES = 64 * 1024 * 1024
+
+export interface Config {
+  index: {
+    policy: PersistablePolicy
+    explicitPath: string
+    extraDirs: string[]
+    recreate: Recreate
+    localCacheBytes: number
+    rememberUnwritableVolumes: boolean
+    rememberedVolumes: string[]
+  }
+  preview: {
+    maxBytes: number
+    openLargeWithSystem: boolean
+  }
+  extract: {
+    overwrite: ConfigOverwrite
+    allowUnsafePaths: boolean
+  }
+  engine: {
+    bundleCli: boolean
+    cliPath: string
+  }
+  recent: {
+    paths: string[]
+  }
+}
+
+
 export class CommandError extends Error {
   readonly code: string
   readonly retryable: boolean
@@ -176,6 +169,68 @@ export function commandErrorFromUnknown(err: unknown): CommandError {
   return new CommandError('Internal', String(err), false)
 }
 
+export type ConfigPatch = {
+  index?: Omit<Partial<Config['index']>, 'policy'> & { policy?: IndexPolicy }
+  preview?: Partial<Config['preview']>
+  extract?: Partial<Config['extract']>
+  engine?: Partial<Config['engine']>
+  recent?: Partial<Config['recent']>
+}
+
+export type CacheClearResult = { removed: number }
+
+export function defaultConfig(): Config {
+  return {
+    index: {
+      policy: 'sibling',
+      explicitPath: '',
+      extraDirs: [],
+      recreate: 'if-invalid',
+      localCacheBytes: 2 * 1024 * 1024 * 1024,
+      rememberUnwritableVolumes: true,
+      rememberedVolumes: [],
+    },
+    preview: {
+      maxBytes: PREVIEW_DEFAULT_BYTES,
+      openLargeWithSystem: true,
+    },
+    extract: {
+      overwrite: 'ask',
+      allowUnsafePaths: false,
+    },
+    engine: {
+      bundleCli: true,
+      cliPath: '',
+    },
+    recent: {
+      paths: [],
+    },
+  }
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return []
+  }
+  return value.map((item) => String(item))
+}
+
+function asBool(value: unknown, fallback: boolean): boolean {
+  if (typeof value === 'boolean') {
+    return value
+  }
+  return fallback
+}
+
+
+
+export interface LaunchIntentWire {
+  action: 'open' | 'extract-here' | 'extract-to' | 'index-only'
+  destDir: string | null
+  archives: string[]
+  silent: boolean
+}
+
 export interface NativeAddon {
   pickFile(): Promise<string | null>
   pickDir(): Promise<string | null>
@@ -190,6 +245,10 @@ export interface NativeAddon {
   getConfig(): Promise<Config>
   setConfig(patch: ConfigPatch): Promise<Config>
   clearLocalIndexCache(): Promise<CacheClearResult>
+  parseArgv(args: string[]): Promise<LaunchIntentWire>
+  applyLaunch(args: string[]): Promise<void>
+  registerAssociations(): Promise<void>
+  unregisterAssociations(): Promise<void>
   on(event: 'jobSucceeded', cb: (e: JobSucceededEvent) => void): void
   on(event: 'jobFailed', cb: (e: JobFailedEvent) => void): void
   on(event: 'jobCancelled', cb: (e: JobCancelledEvent) => void): void
@@ -353,6 +412,29 @@ export function normalizePreview(raw: unknown): PreviewResult {
   return { kind: 'skipped', reason: 'unknown' }
 }
 
+export function normalizeConfig(raw: unknown): Config {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const extract = (pick(obj, 'extract', 'extract') ?? {}) as Record<string, unknown>
+  const preview = (pick(obj, 'preview', 'preview') ?? {}) as Record<string, unknown>
+  const overwriteRaw = String(pick(extract, 'overwrite', 'overwrite') ?? 'ask')
+  const overwrite: ConfigOverwrite =
+    overwriteRaw === 'skip' || overwriteRaw === 'replace' || overwriteRaw === 'ask'
+      ? overwriteRaw
+      : 'ask'
+  const defaults = defaultConfig()
+  return {
+    ...defaults,
+    extract: {
+      overwrite,
+      allowUnsafePaths: Boolean(pick(extract, 'allowUnsafePaths', 'allow_unsafe_paths')),
+    },
+    preview: {
+      maxBytes: asNumber(pick(preview, 'maxBytes', 'max_bytes')) ?? defaults.preview.maxBytes,
+      openLargeWithSystem: pick(preview, 'openLargeWithSystem', 'open_large_with_system') !== false,
+    },
+  }
+}
+
 function normalizeJobId(raw: unknown): { jobId: JobId } {
   const obj = (raw ?? {}) as Record<string, unknown>
   const jobId = asNumber(pick(obj, 'jobId', 'job_id'))
@@ -372,114 +454,39 @@ function fn(mod: RawAddon, camel: string, snake: string): (...args: unknown[]) =
   return value as (...args: unknown[]) => unknown
 }
 
+function maybeFn(
+  mod: RawAddon,
+  camel: string,
+  snake: string,
+): ((...args: unknown[]) => unknown) | null {
+  const value = mod[camel] ?? mod[snake]
+  if (typeof value !== 'function') {
+    return null
+  }
+  return value as (...args: unknown[]) => unknown
+}
+
+function missing(name: string): never {
+  throw new CommandError('Internal', `native addon missing ${name}()`, false)
+}
+
+export function normalizeLaunchIntent(raw: unknown): LaunchIntentWire {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const actionRaw = String(obj.action ?? 'open')
+  const action: LaunchIntentWire['action'] =
+    actionRaw === 'extract-here' || actionRaw === 'extract-to' || actionRaw === 'index-only'
+      ? actionRaw
+      : 'open'
+  const dest = pick<unknown>(obj, 'destDir', 'dest_dir')
+  return {
+    action,
+    destDir: dest == null ? null : String(dest),
+    archives: Array.isArray(obj.archives) ? obj.archives.map((p) => String(p)) : [],
+    silent: obj.silent === true,
+  }
+}
+
 /** Map the generated napi module onto the 05 contract (camelCase, nulls, promises). */
-export function defaultConfig(): Config {
-  return {
-    index: {
-      policy: 'sibling',
-      explicitPath: '',
-      extraDirs: [],
-      recreate: 'if-invalid',
-      localCacheBytes: 2 * 1024 * 1024 * 1024,
-      rememberUnwritableVolumes: true,
-      rememberedVolumes: [],
-    },
-    preview: {
-      maxBytes: PREVIEW_DEFAULT_BYTES,
-      openLargeWithSystem: true,
-    },
-    extract: {
-      overwrite: 'ask',
-      allowUnsafePaths: false,
-    },
-    engine: {
-      bundleCli: true,
-      cliPath: '',
-    },
-    recent: {
-      paths: [],
-    },
-  }
-}
-
-function asStringArray(value: unknown): string[] {
-  if (!Array.isArray(value)) {
-    return []
-  }
-  return value.map((item) => String(item))
-}
-
-function asBool(value: unknown, fallback: boolean): boolean {
-  if (typeof value === 'boolean') {
-    return value
-  }
-  return fallback
-}
-
-export function normalizeConfig(raw: unknown): Config {
-  const obj = (raw ?? {}) as Record<string, unknown>
-  const index = (pick(obj, 'index', 'index') ?? {}) as Record<string, unknown>
-  const preview = (pick(obj, 'preview', 'preview') ?? {}) as Record<string, unknown>
-  const extract = (pick(obj, 'extract', 'extract') ?? {}) as Record<string, unknown>
-  const engine = (pick(obj, 'engine', 'engine') ?? {}) as Record<string, unknown>
-  const recent = (pick(obj, 'recent', 'recent') ?? {}) as Record<string, unknown>
-  const defaults = defaultConfig()
-  const policyRaw = String(pick(index, 'policy', 'policy') ?? defaults.index.policy)
-  const policy: PersistablePolicy = policyRaw === 'memory' || policyRaw === 'sibling' || policyRaw === 'user-cache' || policyRaw === 'explicit' || policyRaw === 'temp'
-    ? policyRaw === 'memory'
-      ? 'sibling'
-      : policyRaw
-    : 'sibling'
-  const recreateRaw = String(pick(index, 'recreate', 'recreate') ?? defaults.index.recreate)
-  const recreate: Recreate =
-    recreateRaw === 'never' || recreateRaw === 'if-invalid' || recreateRaw === 'always'
-      ? recreateRaw
-      : 'if-invalid'
-  const overwriteRaw = String(pick(extract, 'overwrite', 'overwrite') ?? defaults.extract.overwrite)
-  const overwrite: ConfigOverwrite =
-    overwriteRaw === 'ask' || overwriteRaw === 'skip' || overwriteRaw === 'replace'
-      ? overwriteRaw
-      : 'ask'
-  const maxBytes = asNumber(pick(preview, 'maxBytes', 'max_bytes')) ?? defaults.preview.maxBytes
-  return {
-    index: {
-      policy,
-      explicitPath: String(pick(index, 'explicitPath', 'explicit_path') ?? ''),
-      extraDirs: asStringArray(pick(index, 'extraDirs', 'extra_dirs')),
-      recreate,
-      localCacheBytes: asNumber(pick(index, 'localCacheBytes', 'local_cache_bytes')) ?? defaults.index.localCacheBytes,
-      rememberUnwritableVolumes: asBool(
-        pick(index, 'rememberUnwritableVolumes', 'remember_unwritable_volumes'),
-        true,
-      ),
-      rememberedVolumes: asStringArray(pick(index, 'rememberedVolumes', 'remembered_volumes')),
-    },
-    preview: {
-      maxBytes: Math.min(Math.max(0, maxBytes), PREVIEW_CEILING_BYTES),
-      openLargeWithSystem: asBool(
-        pick(preview, 'openLargeWithSystem', 'open_large_with_system'),
-        true,
-      ),
-    },
-    extract: {
-      overwrite,
-      allowUnsafePaths: asBool(pick(extract, 'allowUnsafePaths', 'allow_unsafe_paths'), false),
-    },
-    engine: {
-      bundleCli: asBool(pick(engine, 'bundleCli', 'bundle_cli'), true),
-      cliPath: String(pick(engine, 'cliPath', 'cli_path') ?? ''),
-    },
-    recent: {
-      paths: asStringArray(pick(recent, 'paths', 'paths')),
-    },
-  }
-}
-
-export function normalizeCacheClear(raw: unknown): CacheClearResult {
-  const obj = (raw ?? {}) as Record<string, unknown>
-  return { removed: asNumber(obj.removed) ?? 0 }
-}
-
 export function wrapNativeModule(mod: unknown): NativeAddon {
   const raw = (mod ?? {}) as RawAddon
   const pickFileFn = fn(raw, 'pickFile', 'pick_file')
@@ -493,8 +500,12 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
   const extractFn = fn(raw, 'extract', 'extract')
   const cancelFn = fn(raw, 'cancel', 'cancel')
   const getConfigFn = fn(raw, 'getConfig', 'get_config')
-  const setConfigFn = fn(raw, 'setConfig', 'set_config')
-  const clearCacheFn = fn(raw, 'clearLocalIndexCache', 'clear_local_index_cache')
+  const setConfigFn = maybeFn(raw, 'setConfig', 'set_config')
+  const parseArgvFn = maybeFn(raw, 'parseArgv', 'parse_argv')
+  const applyLaunchFn = maybeFn(raw, 'applyLaunch', 'apply_launch')
+  const registerFn = maybeFn(raw, 'registerAssociations', 'register_associations')
+  const unregisterFn = maybeFn(raw, 'unregisterAssociations', 'unregister_associations')
+  const clearCacheFn = maybeFn(raw, 'clearLocalIndexCache', 'clear_local_index_cache')
   const onFn = fn(raw, 'on', 'on')
 
   return {
@@ -582,15 +593,63 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
       }
     },
     async setConfig(patch) {
+      if (!setConfigFn) {
+        missing('setConfig')
+      }
       try {
         return normalizeConfig(await Promise.resolve(setConfigFn(patch)))
       } catch (err) {
         throw commandErrorFromUnknown(err)
       }
     },
-    async clearLocalIndexCache() {
+    async parseArgv(args) {
+      if (!parseArgvFn) {
+        missing('parseArgv')
+      }
       try {
-        return normalizeCacheClear(await Promise.resolve(clearCacheFn()))
+        return normalizeLaunchIntent(await Promise.resolve(parseArgvFn(args)))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async applyLaunch(args) {
+      if (!applyLaunchFn) {
+        missing('applyLaunch')
+      }
+      try {
+        await Promise.resolve(applyLaunchFn(args))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async registerAssociations() {
+      if (!registerFn) {
+        missing('registerAssociations')
+      }
+      try {
+        await Promise.resolve(registerFn())
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async unregisterAssociations() {
+      if (!unregisterFn) {
+        missing('unregisterAssociations')
+      }
+      try {
+        await Promise.resolve(unregisterFn())
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async clearLocalIndexCache() {
+      if (!clearCacheFn) {
+        missing('clearLocalIndexCache')
+      }
+      try {
+        const rawResult = await Promise.resolve(clearCacheFn())
+        const obj = (rawResult ?? {}) as Record<string, unknown>
+        return { removed: asNumber(obj.removed) ?? 0 }
       } catch (err) {
         throw commandErrorFromUnknown(err)
       }

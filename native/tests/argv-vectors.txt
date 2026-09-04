@@ -1,0 +1,12 @@
+# Golden argv vectors (tab-separated).
+# args|pipe-separated	action	dest (empty if omitted)	archives|pipe-separated	silent 0/1
+# dest empty means destDir is omitted — never the archive.
+--extract-to|--|/tmp/archive.tar	extract-to		/tmp/archive.tar	0
+--extract-to|archive.tar	extract-to		archive.tar	0
+--extract-to|/out|archive.tar	extract-to	/out	archive.tar	0
+--extract-here|a.tar|b.tar	extract-here		a.tar|b.tar	0
+--index-only|a.tar	index-only		a.tar	0
+--silent|--extract-here|a.tar	extract-here		a.tar	1
+--silent|--extract-to|--|archive.tar	extract-to		archive.tar	1
+a.tar|b.tar	open		a.tar|b.tar	0
+--silent|--index-only|a.tar	index-only		a.tar	1

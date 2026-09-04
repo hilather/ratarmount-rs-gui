@@ -1,0 +1,15 @@
+[Desktop Entry]
+Name=ratarmount
+Comment=Browse and extract archives
+Exec=ratarmount-gui %F
+Icon=ratarmount-gui
+Type=Application
+Terminal=false
+MimeType=application/x-tar;application/x-gtar;application/gzip;application/x-bzip2;application/x-xz;application/zstd;application/zip;application/x-7z-compressed;application/vnd.rar;application/x-iso9660-image;
+Categories=Utility;Archiving;Compression;
+StartupNotify=true
+Actions=extract-here;
+
+[Desktop Action extract-here]
+Name=Extract here
+Exec=ratarmount-gui --extract-here %F

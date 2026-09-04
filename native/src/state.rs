@@ -225,7 +225,8 @@ impl NativeApp {
     }
 
     pub(crate) fn alloc_session(&mut self, source: String) -> u32 {
-        self.alloc_session_with_catalog(source, FakeCatalog::new())
+        let catalog = crate::catalog::catalog_for_source(&source);
+        self.alloc_session_with_catalog(source, catalog)
     }
 
     pub(crate) fn alloc_session_with_catalog(

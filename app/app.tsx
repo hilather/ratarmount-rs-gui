@@ -1,6 +1,7 @@
 import { render } from '@gpuix/react'
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
+import { isHeadlessLaunch, launchArgsFromProcess, parseLaunchArgv } from './argv'
 import { ExplorerController } from './explorer'
 import { ExplorerView, explorerHandlers } from './explorer-view'
 import { loadNativeAddon } from './native-addon'
@@ -9,7 +10,13 @@ import { SettingsController } from './settings'
 import { SettingsView, settingsHandlers } from './settings-view'
 import { WINDOW_HEIGHT, WINDOW_TITLE, WINDOW_WIDTH } from './window'
 
-export function App({ native }: { native?: NativeAddon } = {}) {
+export function App({
+  native,
+  initialArgv,
+}: {
+  native?: NativeAddon
+  initialArgv?: string[]
+} = {}) {
   const controller = useMemo(() => new ExplorerController(), [])
   const settings = useMemo(() => new SettingsController(), [])
   const [screen, setScreen] = useState<'explorer' | 'settings'>('explorer')
@@ -24,7 +31,7 @@ export function App({ native }: { native?: NativeAddon } = {}) {
     settings.getSnapshot,
   )
   const handlers = useMemo(
-    () => explorerHandlers(controller, { onSettings: () => setScreen('settings') }),
+    () => explorerHandlers(controller),
     [controller],
   )
   const settingHandlers = useMemo(
@@ -35,6 +42,9 @@ export function App({ native }: { native?: NativeAddon } = {}) {
   useEffect(() => {
     if (native) {
       controller.setNative(native)
+      if (initialArgv && initialArgv.length > 0) {
+        void controller.applyArgv(initialArgv)
+      }
       settings.setNative(native)
       return () => controller.dispose()
     }
@@ -42,9 +52,16 @@ export function App({ native }: { native?: NativeAddon } = {}) {
     let cancelled = false
     loadNativeAddon()
       .then((addon) => {
-        if (!cancelled) {
-          controller.setNative(addon)
-          settings.setNative(addon)
+        if (cancelled) {
+          return
+        }
+        controller.setNative(addon)
+        settings.setNative(addon)
+        const args =
+          initialArgv ??
+          (typeof process === 'undefined' ? [] : launchArgsFromProcess(process.argv))
+        if (args.length > 0) {
+          void controller.applyArgv(args)
         }
       })
       .catch((err: unknown) => {
@@ -57,7 +74,7 @@ export function App({ native }: { native?: NativeAddon } = {}) {
       cancelled = true
       controller.dispose()
     }
-  }, [controller, native, settings])
+  }, [controller, native, initialArgv, settings])
 
   if (screen === 'settings') {
     return <SettingsView model={settingsModel} {...settingHandlers} />
@@ -66,13 +83,36 @@ export function App({ native }: { native?: NativeAddon } = {}) {
   return <ExplorerView model={model} {...handlers} />
 }
 
+async function runSilentLaunch(args: string[]): Promise<void> {
+  const addon = await loadNativeAddon()
+  await addon.applyLaunch(args)
+}
+
 // Skip `render()` when this module is imported.
 if (import.meta.main || Bun.isStandaloneExecutable) {
-  render(<App />, {
-    title: WINDOW_TITLE,
-    width: WINDOW_WIDTH,
-    height: WINDOW_HEIGHT,
-    // GPUIX_BACKGROUND=1 opens the window unfocused.
-    focus: typeof process === 'undefined' || process.env.GPUIX_BACKGROUND !== '1',
-  })
+  const args = typeof process === 'undefined' ? [] : launchArgsFromProcess(process.argv)
+  let headless = false
+  try {
+    headless = isHeadlessLaunch(parseLaunchArgv(args))
+  } catch {
+    headless = false
+  }
+  if (headless) {
+    void runSilentLaunch(args).then(
+      () => process.exit(0),
+      (err: unknown) => {
+        const message = err instanceof Error ? err.message : String(err)
+        console.error(message)
+        process.exit(1)
+      },
+    )
+  } else {
+    render(<App />, {
+      title: WINDOW_TITLE,
+      width: WINDOW_WIDTH,
+      height: WINDOW_HEIGHT,
+      // GPUIX_BACKGROUND=1 opens the window unfocused.
+      focus: typeof process === 'undefined' || process.env.GPUIX_BACKGROUND !== '1',
+    })
+  }
 }

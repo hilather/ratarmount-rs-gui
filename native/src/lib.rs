@@ -1,3 +1,5 @@
+mod argv;
+mod associations;
 mod catalog;
 mod commands;
 mod config;
@@ -13,6 +15,7 @@ mod session;
 mod state;
 mod types;
 
+pub use argv::{parse_argv, LaunchAction, LaunchIntent};
 pub use commands::run_self_test;
 pub use paths::fixture_hello_tar;
 pub use state::NativeApp;
@@ -33,3 +36,5 @@ mod w2_tests;
 mod w4_tests;
 #[cfg(test)]
 mod w5_tests;
+#[cfg(test)]
+mod w6_tests;
