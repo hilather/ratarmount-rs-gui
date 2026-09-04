@@ -43,6 +43,31 @@ pub fn write_ustar(path: &Path, files: &[(&str, &[u8])]) -> io::Result<()> {
     file.write_all(&out)
 }
 
+pub fn ustar_member_names(path: &Path) -> io::Result<Vec<String>> {
+    let data = fs::read(path)?;
+    let mut i = 0;
+    let mut names = Vec::new();
+    while i + BLOCK <= data.len() {
+        let hdr = &data[i..i + BLOCK];
+        if hdr.iter().all(|b| *b == 0) {
+            break;
+        }
+        let typeflag = hdr[156];
+        let size = parse_octal(&hdr[124..136]) as usize;
+        if typeflag == b'0' || typeflag == 0 {
+            let name_bytes = hdr[..100]
+                .iter()
+                .copied()
+                .take_while(|b| *b != 0)
+                .collect::<Vec<u8>>();
+            names.push(String::from_utf8_lossy(&name_bytes).into_owned());
+        }
+        let padded = size.div_ceil(BLOCK).saturating_mul(BLOCK);
+        i += BLOCK + padded;
+    }
+    Ok(names)
+}
+
 pub fn count_ustar_regular_files(path: &Path) -> io::Result<usize> {
     let data = fs::read(path)?;
     let mut i = 0;

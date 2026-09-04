@@ -19,6 +19,7 @@ pub use types::{
     ConfigPatch, ExtractOpts, ExtractPlanOpts, FindOpts, IndexPolicy, ListOpts, OpenOpts,
     OpenOutcome, PreviewConfigPatch, Recreate, LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX,
     PREVIEW_CEILING_BYTES, PREVIEW_DEFAULT_BYTES, STUB_BUSY_DEST, STUB_CONFLICTS_DEST,
+    STUB_HOLD_DEST,
 };
 
 #[cfg(test)]
@@ -27,3 +28,5 @@ mod ustar_fixture;
 mod w1_tests;
 #[cfg(test)]
 mod w2_tests;
+#[cfg(test)]
+mod w4_tests;

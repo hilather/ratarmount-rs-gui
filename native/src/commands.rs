@@ -1,16 +1,24 @@
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::Instant;
+
 use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, page_names, sample_conflicts};
 use crate::error::{ApiError, ErrorCode, Result};
 use crate::events::Event;
 use crate::parse::parse_native_overwrite;
 use crate::paths::{
-    discard_secret, is_fixture_source, normalize_archive_path, normalize_member_path,
+    discard_secret, is_encrypted_source, is_fixture_source, member_dest_path,
+    normalize_archive_path, normalize_member_path,
 };
-use crate::state::{JobKind, JobStatus, NativeApp};
+use crate::state::{JobKind, JobStatus, NativeApp, PendingExtract, PendingExtractItem};
 use crate::types::{
     Config, ConfigPatch, DirEnt, DirPage, ExtractConflict, ExtractOpts, ExtractPlan,
-    ExtractPlanOpts, FindOpts, FindPage, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, PreviewKind,
-    Recreate, EXTRACT_PLAN_CONFLICT_SAMPLE, PREVIEW_CEILING_BYTES, STUB_BUSY_DEST,
-    STUB_CONFLICTS_DEST,
+    ExtractPlanOpts, FindOpts, FindPage, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, Overwrite,
+    PreviewKind, Recreate, EXTRACT_PLAN_CONFLICT_SAMPLE, EXTRACT_PLAN_CONFLICT_SCAN_MS,
+    EXTRACT_PLAN_CONFLICT_SCAN_ROWS, FAKE_ENCRYPTED_PASSWORD, PREVIEW_CEILING_BYTES,
+    STUB_BUSY_DEST, STUB_CONFLICTS_DEST, STUB_HOLD_DEST,
 };
 
 impl NativeApp {
@@ -30,9 +38,17 @@ impl NativeApp {
                 "unknown archive; W1 stub accepts the fixture path (or RGUI_FAKE=1)",
             ));
         }
-        discard_secret(opts.password);
-
         let source = opts.source;
+        if is_encrypted_source(&source) {
+            let password = opts.password;
+            let ok = password.as_deref() == Some(FAKE_ENCRYPTED_PASSWORD);
+            discard_secret(password);
+            if !ok {
+                return Err(ApiError::bad_password("incorrect password"));
+            }
+        } else {
+            discard_secret(opts.password);
+        }
         if opts.recreate == Recreate::Always {
             let session_id = self.alloc_session(source);
             let (job_id, _) = self.alloc_job(JobKind::Index, Some(session_id));
@@ -124,14 +140,39 @@ impl NativeApp {
     pub fn preview(&self, session_id: u32, path: &str) -> Result<PreviewKind> {
         let session = self.session(session_id)?;
         let path = normalize_archive_path(path)?;
+        let cap = self.config.preview.max_bytes;
         match session.catalog.get(&path) {
             None => Err(ApiError::not_found(format!("path not found: {path}"))),
             Some(ent) if ent.is_dir => Ok(PreviewKind::Skipped {
                 reason: "unknown".to_string(),
             }),
-            Some(_) => Ok(PreviewKind::Skipped {
-                reason: "unknown".to_string(),
+            Some(ent) if ent.size > cap => Ok(PreviewKind::Skipped {
+                reason: "too-large".to_string(),
             }),
+            Some(ent) => match session.catalog.body(&path) {
+                None => {
+                    if !self.fake_or_test() {
+                        return Err(crate::session::engine_unavailable("read_range"));
+                    }
+                    Ok(PreviewKind::Skipped {
+                        reason: "unknown".to_string(),
+                    })
+                }
+                Some(body) => {
+                    let take = (cap.max(0) as usize).min(body.len());
+                    let slice = &body[..take];
+                    if slice.contains(&0) {
+                        return Ok(PreviewKind::Skipped {
+                            reason: "binary".to_string(),
+                        });
+                    }
+                    let truncated = (ent.size as u64) > take as u64;
+                    Ok(PreviewKind::Text {
+                        text: String::from_utf8_lossy(slice).into_owned(),
+                        truncated,
+                    })
+                }
+            },
         }
     }
 
@@ -142,6 +183,7 @@ impl NativeApp {
             let _ = normalize_member_path(member, allow_dotdot)?;
         }
         let (files, bytes) = session.catalog.totals(&opts.members);
+        let listed = session.catalog.extract_files(&opts.members);
         let (conflicts, truncated, conflict_count) = if opts.dest_dir == STUB_CONFLICTS_DEST {
             let all: Vec<ExtractConflict> = (0..80)
                 .map(|i| ExtractConflict {
@@ -153,7 +195,7 @@ impl NativeApp {
             let (sample, truncated) = sample_conflicts(all);
             (sample, truncated, count)
         } else {
-            (Vec::new(), false, 0)
+            plan_dest_conflicts(&listed, Path::new(&opts.dest_dir))
         };
         debug_assert!(conflicts.len() <= EXTRACT_PLAN_CONFLICT_SAMPLE);
         Ok(ExtractPlan {
@@ -166,7 +208,15 @@ impl NativeApp {
     }
 
     pub fn extract(&mut self, opts: ExtractOpts) -> Result<u32> {
-        let _overwrite = parse_native_overwrite(&opts.overwrite)?;
+        let job_id = self.begin_extract(opts)?;
+        self.run_extract_job(job_id);
+        Ok(job_id)
+    }
+
+    /// Validate, plan dest paths, and allocate `jobId`. PathEscape is a command
+    /// error (no job). Dest writes run in `run_extract_job`.
+    pub fn begin_extract(&mut self, opts: ExtractOpts) -> Result<u32> {
+        let overwrite = parse_native_overwrite(&opts.overwrite)?;
         let session_id = opts.session_id;
         let _ = self.session(session_id)?;
         let allow_dotdot = self.config.extract.allow_unsafe_paths;
@@ -174,8 +224,8 @@ impl NativeApp {
             let _ = normalize_member_path(member, allow_dotdot)?;
         }
 
-        let (job_id, _) = self.alloc_job(JobKind::Extract, Some(session_id));
         if opts.dest_dir == STUB_BUSY_DEST {
+            let (job_id, _) = self.alloc_job(JobKind::Extract, Some(session_id));
             if let Some(job) = self.jobs.get_mut(&job_id) {
                 job.status = JobStatus::Failed;
             }
@@ -188,22 +238,158 @@ impl NativeApp {
             });
             return Ok(job_id);
         }
+        if opts.dest_dir == STUB_HOLD_DEST {
+            let (job_id, _) = self.alloc_job(JobKind::Extract, Some(session_id));
+            return Ok(job_id);
+        }
 
+        if !self.fake_or_test() {
+            let (job_id, _) = self.alloc_job(JobKind::Extract, Some(session_id));
+            let req = crate::session::extract_opts_to_request(&opts, overwrite);
+            let err = match crate::session::extract_to(None, req) {
+                Ok(()) => crate::session::engine_unavailable("extract_to"),
+                Err(err) => err,
+            };
+            if let Some(job) = self.jobs.get_mut(&job_id) {
+                job.status = JobStatus::Failed;
+            }
+            self.emit(Event::JobFailed {
+                job_id,
+                code: err.code.as_str().to_string(),
+                message: err.message,
+                retryable: err.code.retryable(),
+            });
+            return Ok(job_id);
+        }
+
+        let dest_root = PathBuf::from(&opts.dest_dir);
+        let items = {
+            let session = self.session(session_id)?;
+            let files = session.catalog.extract_files(&opts.members);
+            let mut items = Vec::with_capacity(files.len());
+            for file in files {
+                match member_dest_path(&dest_root, &file.path) {
+                    Ok(dest) => {
+                        let body = session
+                            .catalog
+                            .body(&file.path)
+                            .map(|b| b.to_vec())
+                            .unwrap_or_else(|| format!("rgui-fake:{}\n", file.path).into_bytes());
+                        items.push(PendingExtractItem {
+                            member: file.path,
+                            dest,
+                            body,
+                        });
+                    }
+                    Err(err) => {
+                        if !allow_dotdot {
+                            return Err(err);
+                        }
+                    }
+                }
+            }
+            items
+        };
+
+        let (job_id, _) = self.alloc_job(JobKind::Extract, Some(session_id));
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            job.pending_extract = Some(PendingExtract { overwrite, items });
+        }
+        Ok(job_id)
+    }
+
+    pub fn take_extract_work(&mut self, job_id: u32) -> Option<ExtractWork> {
+        let job = self.jobs.get_mut(&job_id)?;
+        if job.status != JobStatus::Running {
+            return None;
+        }
+        let pending = job.pending_extract.take()?;
+        Some(ExtractWork {
+            overwrite: pending.overwrite,
+            items: pending.items,
+            cancel: job.cancel.clone(),
+            session_id: job.session_id,
+        })
+    }
+
+    pub fn mark_extract_cancelled(&mut self, job_id: u32) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.status == JobStatus::Running {
+                job.status = JobStatus::Cancelled;
+                self.emit(Event::JobCancelled { job_id });
+            }
+        }
+    }
+
+    pub fn mark_extract_succeeded(&mut self, job_id: u32, session_id: Option<u32>) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.status == JobStatus::Running {
+                job.status = JobStatus::Succeeded;
+                self.emit(Event::JobSucceeded { job_id, session_id });
+            }
+        }
+    }
+
+    pub fn mark_extract_failed(&mut self, job_id: u32, err: ApiError) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            if job.status != JobStatus::Running {
+                return;
+            }
+            job.status = JobStatus::Failed;
+            self.emit(Event::JobFailed {
+                job_id,
+                code: err.code.as_str().to_string(),
+                message: err.message,
+                retryable: err.code.retryable(),
+            });
+        }
+    }
+
+    pub fn emit_extract_progress(
+        &mut self,
+        job_id: u32,
+        files_done: i64,
+        files_hint: i64,
+        bytes_out: i64,
+        current: String,
+    ) {
+        if self
+            .jobs
+            .get(&job_id)
+            .is_none_or(|job| job.status != JobStatus::Running)
+        {
+            return;
+        }
         self.emit(Event::ExtractProgress {
             job_id,
-            files_done: 1,
-            files_hint: Some(1),
-            bytes_out: 0,
-            current: None,
+            files_done,
+            files_hint: Some(files_hint),
+            bytes_out,
+            current: Some(current),
         });
-        if let Some(job) = self.jobs.get_mut(&job_id) {
-            job.status = JobStatus::Succeeded;
-        }
-        self.emit(Event::JobSucceeded {
-            job_id,
-            session_id: Some(session_id),
+    }
+
+    /// Write planned members. Holds `&mut self` for the rlib/test path.
+    pub fn run_extract_job(&mut self, job_id: u32) {
+        let Some(work) = self.take_extract_work(job_id) else {
+            return;
+        };
+        let session_id = work.session_id;
+        let files_hint = work.items.len() as i64;
+        drive_extract_work(work, |step| match step {
+            ExtractStep::Progress {
+                files_done,
+                bytes_out,
+                current,
+            } => {
+                self.emit_extract_progress(job_id, files_done, files_hint, bytes_out, current);
+            }
+            ExtractStep::Cancelled => self.mark_extract_cancelled(job_id),
+            ExtractStep::Failed(err) => {
+                let _ = fail_extract_job(self, job_id, err);
+            }
+            ExtractStep::Succeeded => self.mark_extract_succeeded(job_id, session_id),
         });
-        Ok(job_id)
     }
 
     pub fn cancel(&mut self, job_id: u32) -> Result<()> {
@@ -322,12 +508,119 @@ impl NativeApp {
             .get(&session_id)
             .ok_or_else(|| ApiError::not_found(format!("session {session_id} is closed")))
     }
+
+    #[cfg(test)]
+    pub(crate) fn open_catalog(
+        &mut self,
+        source: impl Into<String>,
+        catalog: crate::catalog::FakeCatalog,
+    ) -> u32 {
+        self.alloc_session_with_catalog(source.into(), catalog)
+    }
 }
 
 #[derive(Clone, Debug)]
 pub enum FuseMountResult {
     Mountpoint { mountpoint: String },
     Error { error: String },
+}
+
+pub struct ExtractWork {
+    pub overwrite: Overwrite,
+    pub items: Vec<PendingExtractItem>,
+    pub cancel: Arc<AtomicBool>,
+    pub session_id: Option<u32>,
+}
+
+pub enum ExtractStep {
+    Progress {
+        files_done: i64,
+        bytes_out: i64,
+        current: String,
+    },
+    Cancelled,
+    Failed(ApiError),
+    Succeeded,
+}
+
+pub fn write_extract_item(item: &PendingExtractItem, overwrite: Overwrite) -> Result<i64> {
+    if item.dest.exists() && overwrite == Overwrite::Skip {
+        return Ok(0);
+    }
+    if let Some(parent) = item.dest.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| ApiError::not_writable(format!("create dest: {err}")))?;
+    }
+    fs::write(&item.dest, &item.body)
+        .map_err(|err| ApiError::not_writable(format!("write dest: {err}")))?;
+    Ok(item.body.len() as i64)
+}
+
+/// Dest writes happen between `on_step` calls so the caller can drop a mutex.
+pub fn drive_extract_work(work: ExtractWork, mut on_step: impl FnMut(ExtractStep)) {
+    let mut files_done = 0_i64;
+    let mut bytes_out = 0_i64;
+    for item in work.items {
+        if work.cancel.load(Ordering::SeqCst) {
+            on_step(ExtractStep::Cancelled);
+            return;
+        }
+        let current = item.member.clone();
+        match write_extract_item(&item, work.overwrite) {
+            Ok(n) => {
+                files_done += 1;
+                bytes_out += n;
+                on_step(ExtractStep::Progress {
+                    files_done,
+                    bytes_out,
+                    current,
+                });
+            }
+            Err(err) => {
+                on_step(ExtractStep::Failed(err));
+                return;
+            }
+        }
+    }
+    on_step(ExtractStep::Succeeded);
+}
+
+fn plan_dest_conflicts(
+    files: &[crate::catalog::ExtractFile],
+    dest_root: &Path,
+) -> (Vec<ExtractConflict>, bool, i64) {
+    let start = Instant::now();
+    let mut conflict_count = 0_i64;
+    let mut conflicts = Vec::new();
+    let mut truncated = false;
+    for (scanned, file) in files.iter().enumerate() {
+        if scanned >= EXTRACT_PLAN_CONFLICT_SCAN_ROWS
+            || start.elapsed().as_millis() as u64 >= EXTRACT_PLAN_CONFLICT_SCAN_MS
+        {
+            truncated = true;
+            break;
+        }
+        let Ok(dest) = member_dest_path(dest_root, &file.path) else {
+            continue;
+        };
+        if dest.exists() {
+            conflict_count += 1;
+            if conflicts.len() < EXTRACT_PLAN_CONFLICT_SAMPLE {
+                conflicts.push(ExtractConflict {
+                    member: file.path.clone(),
+                    dest_path: dest.to_string_lossy().into_owned(),
+                });
+            } else {
+                truncated = true;
+            }
+        }
+    }
+    (conflicts, truncated, conflict_count)
+}
+
+fn fail_extract_job(app: &mut NativeApp, job_id: u32, err: ApiError) -> Result<u32> {
+    app.mark_extract_failed(job_id, err);
+    Ok(job_id)
 }
 
 pub fn run_self_test() -> std::result::Result<(), String> {

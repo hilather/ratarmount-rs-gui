@@ -113,6 +113,25 @@ impl EngineSession {
         Err(engine_unavailable("lookup"))
     }
 
+    #[allow(dead_code)]
+    pub fn read_range(
+        &self,
+        path: &str,
+        offset: u64,
+        length: u64,
+        max_len: u64,
+    ) -> Result<Vec<u8>> {
+        let _ = (path, offset);
+        if length > max_len {
+            return Err(ApiError::new(
+                crate::error::ErrorCode::PreviewTooLarge,
+                "read_range length exceeds preview cap",
+            ));
+        }
+        // TODO(engine): read_range (G1.4). Never slurp a whole member.
+        Err(engine_unavailable("read_range"))
+    }
+
     pub fn close(self) {
         // TODO(engine): Session::close / Drop (G1.6).
         let _ = self.source;

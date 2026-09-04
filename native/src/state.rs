@@ -1,11 +1,12 @@
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
 
 use crate::catalog::FakeCatalog;
 use crate::events::Event;
 use crate::parse::rgui_fake_enabled;
-use crate::types::Config;
+use crate::types::{Config, Overwrite};
 
 #[derive(Debug)]
 pub struct SessionState {
@@ -34,11 +35,25 @@ pub enum JobStatus {
 }
 
 #[derive(Debug)]
+pub struct PendingExtractItem {
+    pub member: String,
+    pub dest: PathBuf,
+    pub body: Vec<u8>,
+}
+
+#[derive(Debug)]
+pub struct PendingExtract {
+    pub overwrite: Overwrite,
+    pub items: Vec<PendingExtractItem>,
+}
+
+#[derive(Debug)]
 pub struct JobState {
     pub kind: JobKind,
     pub status: JobStatus,
     pub session_id: Option<u32>,
     pub cancel: Arc<AtomicBool>,
+    pub pending_extract: Option<PendingExtract>,
 }
 
 impl JobState {
@@ -141,15 +156,17 @@ impl NativeApp {
     }
 
     pub(crate) fn alloc_session(&mut self, source: String) -> u32 {
+        self.alloc_session_with_catalog(source, FakeCatalog::new())
+    }
+
+    pub(crate) fn alloc_session_with_catalog(
+        &mut self,
+        source: String,
+        catalog: FakeCatalog,
+    ) -> u32 {
         let id = self.next_session_id;
         self.next_session_id = self.next_session_id.saturating_add(1);
-        self.sessions.insert(
-            id,
-            SessionState {
-                source,
-                catalog: FakeCatalog::new(),
-            },
-        );
+        self.sessions.insert(id, SessionState { source, catalog });
         id
     }
 
@@ -168,6 +185,7 @@ impl NativeApp {
                 status: JobStatus::Running,
                 session_id,
                 cancel: cancel.clone(),
+                pending_extract: None,
             },
         );
         (id, cancel)

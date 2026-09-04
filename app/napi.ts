@@ -58,6 +58,68 @@ export interface JobFailedEvent {
   retryable: boolean
 }
 
+export interface JobCancelledEvent {
+  jobId: JobId
+}
+
+export interface ExtractProgressEvent {
+  jobId: JobId
+  filesDone: number
+  filesHint: number | null
+  bytesOut: number
+  current: string | null
+}
+
+export type NativeOverwrite = 'skip' | 'replace'
+export type ConfigOverwrite = 'ask' | 'skip' | 'replace'
+
+export interface ExtractConflict {
+  member: string
+  destPath: string
+}
+
+export interface ExtractPlan {
+  files: number
+  bytes: number
+  conflictCount: number
+  conflicts: ExtractConflict[]
+  conflictsTruncated: boolean
+}
+
+export type PreviewResult =
+  | { kind: 'text'; text: string; truncated: boolean }
+  | { kind: 'image'; png: Uint8Array }
+  | { kind: 'skipped'; reason: 'too-large' | 'binary' | 'unknown' }
+
+export interface PreviewOpts {
+  sessionId: SessionId
+  path: string
+}
+
+export interface ExtractPlanOpts {
+  sessionId: SessionId
+  members: string[]
+  destDir: string
+}
+
+export interface ExtractOpts {
+  sessionId: SessionId
+  members: string[]
+  destDir: string
+  overwrite: NativeOverwrite
+}
+
+export interface Config {
+  extract: {
+    overwrite: ConfigOverwrite
+    allowUnsafePaths: boolean
+  }
+  preview: {
+    maxBytes: number
+    openLargeWithSystem: boolean
+  }
+}
+
 export class CommandError extends Error {
   readonly code: string
   readonly retryable: boolean
@@ -86,12 +148,20 @@ export function commandErrorFromUnknown(err: unknown): CommandError {
 
 export interface NativeAddon {
   pickFile(): Promise<string | null>
+  pickDir(): Promise<string | null>
   open(opts: OpenOpts): Promise<OpenResult>
   close(sessionId: SessionId): Promise<void>
   list(opts: ListOpts): Promise<DirPage>
   lookup(opts: LookupOpts): Promise<DirEnt | null>
+  preview(opts: PreviewOpts): Promise<PreviewResult>
+  extractPlan(opts: ExtractPlanOpts): Promise<ExtractPlan>
+  extract(opts: ExtractOpts): Promise<{ jobId: JobId }>
+  cancel(jobId: JobId): Promise<void>
+  getConfig(): Promise<Config>
   on(event: 'jobSucceeded', cb: (e: JobSucceededEvent) => void): void
   on(event: 'jobFailed', cb: (e: JobFailedEvent) => void): void
+  on(event: 'jobCancelled', cb: (e: JobCancelledEvent) => void): void
+  on(event: 'extractProgress', cb: (e: ExtractProgressEvent) => void): void
 }
 
 function asNumber(value: unknown): number | null {
@@ -189,6 +259,98 @@ export function normalizeJobFailed(raw: unknown): JobFailedEvent {
   }
 }
 
+export function normalizeJobCancelled(raw: unknown): JobCancelledEvent {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const jobId = asNumber(pick(obj, 'jobId', 'job_id'))
+  return { jobId: jobId ?? 0 }
+}
+
+export function normalizeExtractProgress(raw: unknown): ExtractProgressEvent {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const jobId = asNumber(pick(obj, 'jobId', 'job_id'))
+  const current = pick<unknown>(obj, 'current', 'current')
+  return {
+    jobId: jobId ?? 0,
+    filesDone: asNumber(pick(obj, 'filesDone', 'files_done')) ?? 0,
+    filesHint: asNumber(pick(obj, 'filesHint', 'files_hint')),
+    bytesOut: asNumber(pick(obj, 'bytesOut', 'bytes_out')) ?? 0,
+    current: current == null ? null : String(current),
+  }
+}
+
+export function normalizeExtractConflict(raw: unknown): ExtractConflict {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  return {
+    member: String(obj.member ?? ''),
+    destPath: String(pick(obj, 'destPath', 'dest_path') ?? ''),
+  }
+}
+
+export function normalizeExtractPlan(raw: unknown): ExtractPlan {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const conflictsRaw = obj.conflicts
+  const conflicts = Array.isArray(conflictsRaw)
+    ? conflictsRaw.slice(0, 50).map(normalizeExtractConflict)
+    : []
+  return {
+    files: asNumber(obj.files) ?? 0,
+    bytes: asNumber(obj.bytes) ?? 0,
+    conflictCount: asNumber(pick(obj, 'conflictCount', 'conflict_count')) ?? 0,
+    conflicts,
+    conflictsTruncated: Boolean(pick(obj, 'conflictsTruncated', 'conflicts_truncated')),
+  }
+}
+
+export function normalizePreview(raw: unknown): PreviewResult {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const kind = String(obj.kind ?? 'skipped')
+  if (kind === 'text') {
+    return {
+      kind: 'text',
+      text: String(obj.text ?? ''),
+      truncated: obj.truncated === true,
+    }
+  }
+  if (kind === 'image') {
+    return { kind: 'skipped', reason: 'unknown' }
+  }
+  const reason = String(obj.reason ?? 'unknown')
+  if (reason === 'too-large' || reason === 'binary' || reason === 'unknown') {
+    return { kind: 'skipped', reason }
+  }
+  return { kind: 'skipped', reason: 'unknown' }
+}
+
+export function normalizeConfig(raw: unknown): Config {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const extract = (pick(obj, 'extract', 'extract') ?? {}) as Record<string, unknown>
+  const preview = (pick(obj, 'preview', 'preview') ?? {}) as Record<string, unknown>
+  const overwriteRaw = String(pick(extract, 'overwrite', 'overwrite') ?? 'ask')
+  const overwrite: ConfigOverwrite =
+    overwriteRaw === 'skip' || overwriteRaw === 'replace' || overwriteRaw === 'ask'
+      ? overwriteRaw
+      : 'ask'
+  return {
+    extract: {
+      overwrite,
+      allowUnsafePaths: Boolean(pick(extract, 'allowUnsafePaths', 'allow_unsafe_paths')),
+    },
+    preview: {
+      maxBytes: asNumber(pick(preview, 'maxBytes', 'max_bytes')) ?? 8 * 1024 * 1024,
+      openLargeWithSystem: pick(preview, 'openLargeWithSystem', 'open_large_with_system') !== false,
+    },
+  }
+}
+
+function normalizeJobId(raw: unknown): { jobId: JobId } {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const jobId = asNumber(pick(obj, 'jobId', 'job_id'))
+  if (jobId == null) {
+    throw new CommandError('Internal', 'extract returned no jobId', false)
+  }
+  return { jobId }
+}
+
 type RawAddon = Record<string, unknown>
 
 function fn(mod: RawAddon, camel: string, snake: string): (...args: unknown[]) => unknown {
@@ -203,16 +365,30 @@ function fn(mod: RawAddon, camel: string, snake: string): (...args: unknown[]) =
 export function wrapNativeModule(mod: unknown): NativeAddon {
   const raw = (mod ?? {}) as RawAddon
   const pickFileFn = fn(raw, 'pickFile', 'pick_file')
+  const pickDirFn = fn(raw, 'pickDir', 'pick_dir')
   const openFn = fn(raw, 'open', 'open')
   const closeFn = fn(raw, 'close', 'close')
   const listFn = fn(raw, 'list', 'list')
   const lookupFn = fn(raw, 'lookup', 'lookup')
+  const previewFn = fn(raw, 'preview', 'preview')
+  const extractPlanFn = fn(raw, 'extractPlan', 'extract_plan')
+  const extractFn = fn(raw, 'extract', 'extract')
+  const cancelFn = fn(raw, 'cancel', 'cancel')
+  const getConfigFn = fn(raw, 'getConfig', 'get_config')
   const onFn = fn(raw, 'on', 'on')
 
   return {
     async pickFile() {
       try {
         const value = await Promise.resolve(pickFileFn())
+        return value == null ? null : String(value)
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async pickDir() {
+      try {
+        const value = await Promise.resolve(pickDirFn())
         return value == null ? null : String(value)
       } catch (err) {
         throw commandErrorFromUnknown(err)
@@ -247,6 +423,44 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
         throw commandErrorFromUnknown(err)
       }
     },
+    async preview(opts) {
+      try {
+        return normalizePreview(await Promise.resolve(previewFn(opts)))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async extractPlan(opts) {
+      try {
+        return normalizeExtractPlan(await Promise.resolve(extractPlanFn(opts)))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async extract(opts) {
+      try {
+        if (opts.overwrite !== 'skip' && opts.overwrite !== 'replace') {
+          throw new CommandError('Internal', "extract overwrite 'ask' is UI-only; pass 'skip' or 'replace'", false)
+        }
+        return normalizeJobId(await Promise.resolve(extractFn(opts)))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async cancel(jobId) {
+      try {
+        await Promise.resolve(cancelFn(jobId))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async getConfig() {
+      try {
+        return normalizeConfig(await Promise.resolve(getConfigFn()))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
     on(event, cb) {
       try {
         onFn(event, (payload: unknown) => {
@@ -256,6 +470,14 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
           }
           if (event === 'jobFailed') {
             ;(cb as (e: JobFailedEvent) => void)(normalizeJobFailed(payload))
+            return
+          }
+          if (event === 'jobCancelled') {
+            ;(cb as (e: JobCancelledEvent) => void)(normalizeJobCancelled(payload))
+            return
+          }
+          if (event === 'extractProgress') {
+            ;(cb as (e: ExtractProgressEvent) => void)(normalizeExtractProgress(payload))
           }
         })
       } catch (err) {

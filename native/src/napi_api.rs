@@ -648,15 +648,50 @@ pub fn extract_plan(env: Env, opts: JsExtractPlanOpts) -> Result<JsExtractPlan> 
 
 #[napi]
 pub fn extract(env: Env, opts: JsExtractOpts) -> Result<JsJobId> {
-    with_app(env, |app| {
-        app.extract(ExtractOpts {
+    let job_id = with_app(env, |app| {
+        app.begin_extract(ExtractOpts {
             session_id: opts.session_id,
             members: opts.members,
             dest_dir: opts.dest_dir,
             overwrite: opts.overwrite,
         })
-        .map(|job_id| JsJobId { job_id })
-    })
+    })?;
+    std::thread::spawn(move || {
+        run_extract_job_unlocked(job_id);
+    });
+    Ok(JsJobId { job_id })
+}
+
+fn run_extract_job_unlocked(job_id: u32) {
+    let work = {
+        let mut app = global_app().lock().expect("native state mutex poisoned");
+        app.take_extract_work(job_id)
+    };
+    let Some(work) = work else {
+        return;
+    };
+    let files_hint = work.items.len() as i64;
+    let session_id = work.session_id;
+    crate::commands::drive_extract_work(work, |step| {
+        let mut app = global_app().lock().expect("native state mutex poisoned");
+        match step {
+            crate::commands::ExtractStep::Progress {
+                files_done,
+                bytes_out,
+                current,
+            } => {
+                app.emit_extract_progress(job_id, files_done, files_hint, bytes_out, current);
+            }
+            crate::commands::ExtractStep::Cancelled => app.mark_extract_cancelled(job_id),
+            crate::commands::ExtractStep::Failed(err) => app.mark_extract_failed(job_id, err),
+            crate::commands::ExtractStep::Succeeded => {
+                app.mark_extract_succeeded(job_id, session_id);
+            }
+        }
+        let events = app.take_events();
+        drop(app);
+        dispatch_events(events);
+    });
 }
 
 #[napi]

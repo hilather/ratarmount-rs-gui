@@ -1,57 +1,131 @@
 import {
   CommandError,
+  type Config,
   type DirEnt,
+  type ExtractOpts,
+  type ExtractPlan,
+  type ExtractProgressEvent,
+  type JobCancelledEvent,
   type JobFailedEvent,
   type JobSucceededEvent,
   type ListOpts,
   type NativeAddon,
   type OpenOpts,
+  type PreviewResult,
 } from './napi'
 
 export const FAKE_ROOT_DIR_COUNT = 10
 export const FAKE_ROOT_FILE_COUNT = 650
 export const FAKE_ROOT_TOTAL = FAKE_ROOT_DIR_COUNT + FAKE_ROOT_FILE_COUNT
 export const FAKE_MTIME = 1_700_000_000
+export const FAKE_ENCRYPTED_PASSWORD = 'secret'
+export const NINE_MIB = 9 * 1024 * 1024
 
 const LIST_LIMIT_DEFAULT = 200
 const LIST_LIMIT_MAX = 500
+const PREVIEW_DEFAULT = 8 * 1024 * 1024
 
 type JobSucceededListener = (event: JobSucceededEvent) => void
 type JobFailedListener = (event: JobFailedEvent) => void
+type JobCancelledListener = (event: JobCancelledEvent) => void
+type ExtractProgressListener = (event: ExtractProgressEvent) => void
 
 export type FakeNative = NativeAddon & {
   listCalls: ListOpts[]
   openCalls: OpenOpts[]
   closedSessions: number[]
+  extractCalls: ExtractOpts[]
+  previewCalls: { sessionId: number; path: string }[]
+  extractPlanCalls: { sessionId: number; members: string[]; destDir: string }[]
+  written: Map<string, Uint8Array>
+  extractMode: 'ok' | 'hold' | 'busy' | 'path-escape'
+  completeExtract(jobId: number): void
+  failExtract(jobId: number, code: string, message: string, retryable: boolean): void
+  emitExtractProgress(event: ExtractProgressEvent): void
 }
 
 export function createFakeNative(
   options: {
     pickFile?: string | null
-    openMode?: 'session' | 'job' | 'job-no-session' | 'job-failed'
+    pickDir?: string | null
+    openMode?: 'session' | 'job' | 'job-no-session' | 'job-failed' | 'bad-password'
+    extractMode?: 'ok' | 'hold' | 'busy' | 'path-escape'
+    extractPlan?: Partial<ExtractPlan>
+    config?: Partial<Config>
+    extraFiles?: { parent: string; name: string; size: number; body?: string }[]
   } = {},
 ): FakeNative {
   let nextSession = 1
   let nextJob = 1
   const sessions = new Map<number, string>()
-  const catalog = buildCatalog()
+  const catalog = buildCatalog(options.extraFiles)
   const listCalls: ListOpts[] = []
   const openCalls: OpenOpts[] = []
   const closedSessions: number[] = []
+  const extractCalls: ExtractOpts[] = []
+  const previewCalls: { sessionId: number; path: string }[] = []
+  const extractPlanCalls: { sessionId: number; members: string[]; destDir: string }[] = []
+  const written = new Map<string, Uint8Array>()
   const succeeded: JobSucceededListener[] = []
   const failed: JobFailedListener[] = []
+  const cancelled: JobCancelledListener[] = []
+  const extractProgress: ExtractProgressListener[] = []
+  const heldJobs = new Set<number>()
+  const config: Config = {
+    extract: {
+      overwrite: options.config?.extract?.overwrite ?? 'ask',
+      allowUnsafePaths: options.config?.extract?.allowUnsafePaths ?? false,
+    },
+    preview: {
+      maxBytes: options.config?.preview?.maxBytes ?? PREVIEW_DEFAULT,
+      openLargeWithSystem: options.config?.preview?.openLargeWithSystem ?? true,
+    },
+  }
 
   const fake: FakeNative = {
     listCalls,
     openCalls,
     closedSessions,
+    extractCalls,
+    previewCalls,
+    extractPlanCalls,
+    written,
+    extractMode: options.extractMode ?? 'ok',
+    completeExtract(jobId: number) {
+      heldJobs.delete(jobId)
+      for (const cb of extractProgress) {
+        cb({ jobId, filesDone: 1, filesHint: 1, bytesOut: 4, current: '/dir-00/a.txt' })
+      }
+      for (const cb of succeeded) {
+        cb({ jobId })
+      }
+    },
+    failExtract(jobId: number, code: string, message: string, retryable: boolean) {
+      heldJobs.delete(jobId)
+      for (const cb of failed) {
+        cb({ jobId, code, message, retryable })
+      }
+    },
+    emitExtractProgress(event: ExtractProgressEvent) {
+      for (const cb of extractProgress) {
+        cb(event)
+      }
+    },
     async pickFile() {
       return options.pickFile === undefined ? '/tmp/hello.tar' : options.pickFile
+    },
+    async pickDir() {
+      return options.pickDir === undefined ? '/tmp/out' : options.pickDir
     },
     async open(opts) {
       openCalls.push(opts)
       const mode = options.openMode ?? (opts.recreate === 'always' ? 'job' : 'session')
-      if (mode === 'session') {
+      if (mode === 'bad-password') {
+        if (opts.password !== FAKE_ENCRYPTED_PASSWORD) {
+          throw new CommandError('BadPassword', 'incorrect password', false)
+        }
+      }
+      if (mode === 'session' || mode === 'bad-password') {
         const sessionId = nextSession++
         sessions.set(sessionId, opts.source)
         return { sessionId }
@@ -112,6 +186,125 @@ export function createFakeNative(
       }
       return catalog.entries.get(opts.path) ?? null
     },
+    async preview(opts) {
+      previewCalls.push(opts)
+      if (!sessions.has(opts.sessionId)) {
+        throw new CommandError('NotFound', `session ${opts.sessionId} is closed`, false)
+      }
+      const ent = catalog.entries.get(opts.path)
+      if (!ent) {
+        throw new CommandError('NotFound', `path not found: ${opts.path}`, false)
+      }
+      if (ent.isDir) {
+        return { kind: 'skipped', reason: 'unknown' } satisfies PreviewResult
+      }
+      if (ent.size > config.preview.maxBytes) {
+        return { kind: 'skipped', reason: 'too-large' }
+      }
+      const body = catalog.bodies.get(opts.path)
+      if (body == null) {
+        return { kind: 'skipped', reason: 'unknown' }
+      }
+      return { kind: 'text', text: body, truncated: false }
+    },
+    async extractPlan(opts) {
+      extractPlanCalls.push(opts)
+      if (!sessions.has(opts.sessionId)) {
+        throw new CommandError('NotFound', `session ${opts.sessionId} is closed`, false)
+      }
+      if (options.extractPlan) {
+        const conflicts = (options.extractPlan.conflicts ?? []).slice(0, 50)
+        return {
+          files: options.extractPlan.files ?? 0,
+          bytes: options.extractPlan.bytes ?? 0,
+          conflictCount: options.extractPlan.conflictCount ?? 0,
+          conflicts,
+          conflictsTruncated: options.extractPlan.conflictsTruncated ?? conflicts.length < (options.extractPlan.conflictCount ?? 0),
+        }
+      }
+      const files = extractFiles(catalog, opts.members)
+      return {
+        files: files.length,
+        bytes: files.reduce((n, e) => n + e.size, 0),
+        conflictCount: 0,
+        conflicts: [],
+        conflictsTruncated: false,
+      }
+    },
+    async extract(opts) {
+      extractCalls.push(opts)
+      if (opts.overwrite !== 'skip' && opts.overwrite !== 'replace') {
+        throw new CommandError(
+          'Internal',
+          "extract overwrite 'ask' is UI-only; pass 'skip' or 'replace'",
+          false,
+        )
+      }
+      if (!sessions.has(opts.sessionId)) {
+        throw new CommandError('NotFound', `session ${opts.sessionId} is closed`, false)
+      }
+      for (const member of opts.members) {
+        if (member.split('/').includes('..') && !config.extract.allowUnsafePaths) {
+          throw new CommandError('PathEscape', 'path escape', false)
+        }
+      }
+      const jobId = nextJob++
+      const mode = fake.extractMode
+      if (mode === 'path-escape') {
+        throw new CommandError('PathEscape', 'path escape', false)
+      }
+      if (mode === 'busy') {
+        queueMicrotask(() => {
+          for (const cb of failed) {
+            cb({ jobId, code: 'Busy', message: 'destination is busy', retryable: true })
+          }
+        })
+        return { jobId }
+      }
+      if (mode === 'hold') {
+        heldJobs.add(jobId)
+        queueMicrotask(() => {
+          for (const cb of extractProgress) {
+            cb({ jobId, filesDone: 0, filesHint: 1, bytesOut: 0, current: null })
+          }
+        })
+        return { jobId }
+      }
+      const files = extractFiles(catalog, opts.members)
+      for (const ent of files) {
+        const rel = ent.path.replace(/^\//, '')
+        const dest = `${opts.destDir.replace(/\/$/, '')}/${rel}`
+        const body = catalog.bodies.get(ent.path) ?? `rgui-fake:${ent.path}\n`
+        if (opts.overwrite === 'skip' && written.has(dest)) {
+          continue
+        }
+        written.set(dest, new TextEncoder().encode(body))
+      }
+      queueMicrotask(() => {
+        for (const cb of extractProgress) {
+          cb({
+            jobId,
+            filesDone: files.length,
+            filesHint: files.length,
+            bytesOut: files.reduce((n, e) => n + e.size, 0),
+            current: files[0]?.path ?? null,
+          })
+        }
+        for (const cb of succeeded) {
+          cb({ jobId })
+        }
+      })
+      return { jobId }
+    },
+    async cancel(jobId) {
+      heldJobs.delete(jobId)
+      for (const cb of cancelled) {
+        cb({ jobId })
+      }
+    },
+    async getConfig() {
+      return config
+    },
     on(event, cb) {
       if (event === 'jobSucceeded') {
         succeeded.push(cb as JobSucceededListener)
@@ -119,6 +312,14 @@ export function createFakeNative(
       }
       if (event === 'jobFailed') {
         failed.push(cb as JobFailedListener)
+        return
+      }
+      if (event === 'jobCancelled') {
+        cancelled.push(cb as JobCancelledListener)
+        return
+      }
+      if (event === 'extractProgress') {
+        extractProgress.push(cb as ExtractProgressListener)
       }
     },
   }
@@ -128,11 +329,41 @@ export function createFakeNative(
 type Catalog = {
   entries: Map<string, DirEnt>
   children: Map<string, string[]>
+  bodies: Map<string, string>
 }
 
-function buildCatalog(): Catalog {
+function extractFiles(catalog: Catalog, members: string[]): DirEnt[] {
+  if (members.length === 0) {
+    return [...catalog.entries.values()].filter((e) => !e.isDir)
+  }
+  const out: DirEnt[] = []
+  const seen = new Set<string>()
+  for (const member of members) {
+    const ent = catalog.entries.get(member)
+    if (!ent) {
+      continue
+    }
+    if (ent.isDir) {
+      for (const child of catalog.entries.values()) {
+        if (!child.isDir && child.path.startsWith(`${ent.path}/`) && !seen.has(child.path)) {
+          seen.add(child.path)
+          out.push(child)
+        }
+      }
+    } else if (!seen.has(ent.path)) {
+      seen.add(ent.path)
+      out.push(ent)
+    }
+  }
+  return out
+}
+
+function buildCatalog(
+  extraFiles: { parent: string; name: string; size: number; body?: string }[] = [],
+): Catalog {
   const entries = new Map<string, DirEnt>()
   const children = new Map<string, string[]>()
+  const bodies = new Map<string, string>()
 
   function addDir(path: string): void {
     entries.set(path, {
@@ -154,7 +385,7 @@ function buildCatalog(): Catalog {
     children.get(parent)!.push(name)
   }
 
-  function addFile(parent: string, name: string, size: number): void {
+  function addFile(parent: string, name: string, size: number, body?: string): void {
     const path = childPath(parent, name)
     entries.set(path, {
       name,
@@ -164,6 +395,9 @@ function buildCatalog(): Catalog {
       mtime: FAKE_MTIME,
       mode: 0o644,
     })
+    if (body != null) {
+      bodies.set(path, body)
+    }
     children.get(parent)!.push(name)
   }
 
@@ -174,10 +408,13 @@ function buildCatalog(): Catalog {
   for (let i = 0; i < FAKE_ROOT_FILE_COUNT; i++) {
     addFile('/', `file-${String(i).padStart(3, '0')}`, 100 + i)
   }
-  for (const name of ['a.txt', 'b.txt', 'c.txt']) {
-    addFile('/dir-00', name, 4)
+  addFile('/dir-00', 'a.txt', 4, 'hi!\n')
+  addFile('/dir-00', 'b.txt', 4, 'bb!\n')
+  addFile('/dir-00', 'c.txt', 4, 'cc!\n')
+  for (const extra of extraFiles) {
+    addFile(extra.parent, extra.name, extra.size, extra.body)
   }
-  return { entries, children }
+  return { entries, children, bodies }
 }
 
 function childPath(parent: string, name: string): string {

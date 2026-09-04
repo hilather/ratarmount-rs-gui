@@ -388,14 +388,21 @@ fn extract_allow_unsafe_paths_skips_dotdot_reject() {
 fn extract_skip_or_replace_returns_job() {
     let mut app = NativeApp::for_test();
     let session_id = open_fixture(&mut app);
+    let dest = std::env::temp_dir().join(format!(
+        "rgui-w1-extract-{}-{}",
+        std::process::id(),
+        session_id
+    ));
+    let _ = std::fs::remove_dir_all(&dest);
     let job_id = app
         .extract(ExtractOpts {
             session_id,
-            members: vec![],
-            dest_dir: "/tmp".into(),
+            members: vec!["/dir-00/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
             overwrite: "skip".into(),
         })
         .unwrap();
+    let _ = std::fs::remove_dir_all(&dest);
     assert!(job_id >= 1);
     assert_eq!(app.job_kind(job_id), Some(JobKind::Extract));
     assert_eq!(app.job_session(job_id), Some(session_id));
@@ -532,13 +539,20 @@ fn list_open_and_extract_plan_return_no_member_bytes() {
     for ent in &page.entries {
         assert!(ent.archive_offset.is_none());
     }
+    let dest = std::env::temp_dir().join(format!(
+        "rgui-w1-plan-{}-{}",
+        std::process::id(),
+        session_id
+    ));
+    let _ = std::fs::create_dir_all(&dest);
     let plan = app
         .extract_plan(ExtractPlanOpts {
             session_id,
             members: vec![],
-            dest_dir: "/tmp".into(),
+            dest_dir: dest.to_string_lossy().into_owned(),
         })
         .unwrap();
+    let _ = std::fs::remove_dir_all(&dest);
     assert!(plan.conflicts.is_empty());
     let preview = app.preview(session_id, "/file-000").unwrap();
     assert!(matches!(preview, PreviewKind::Skipped { .. }));

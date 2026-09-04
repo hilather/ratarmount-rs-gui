@@ -15,6 +15,8 @@ pub const FAKE_ROOT_FILE_COUNT: usize = 650;
 
 pub const STUB_CONFLICTS_DEST: &str = "__rgui_stub_conflicts__";
 pub const STUB_BUSY_DEST: &str = "__rgui_fail_busy__";
+pub const STUB_HOLD_DEST: &str = "__rgui_hold__";
+pub const FAKE_ENCRYPTED_PASSWORD: &str = "secret";
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum IndexPolicy {

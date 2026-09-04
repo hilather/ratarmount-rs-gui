@@ -84,6 +84,14 @@ impl ApiError {
     pub fn busy(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::Busy, message)
     }
+
+    pub fn bad_password(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::BadPassword, message)
+    }
+
+    pub fn not_writable(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::NotWritable, message)
+    }
 }
 
 impl fmt::Display for ApiError {
