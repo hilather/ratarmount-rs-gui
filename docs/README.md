@@ -1,7 +1,7 @@
 # Documentation
 
 **Product:** `ratarmount-rs-gui` (not `ratarmout-rs-gui`).  
-**Status:** documentation seed — implementation starts at [W0](implementation/waves/W0.md).
+**Status:** W0 hello window — see [implementation/waves/W0.md](implementation/waves/W0.md).
 
 ## Read order
 

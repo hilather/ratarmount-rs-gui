@@ -4,7 +4,7 @@ A native GPU-rendered archive explorer that indexes and browses multi-gigabyte T
 
 GPUIX (React + Zed GPUI) in the UI process. `ratarmount-session` in-process for index / list / extract. No Electron. No webview. Archive bytes never enter the JavaScript heap.
 
-**Status:** pre-implementation documentation seed. Application code (`app/`, `native/`) starts at wave [W0](docs/implementation/waves/W0.md).
+**Status:** W0 hello window. `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount`. Archive open and native session wiring are not connected yet.
 
 Chrome/Electron `ArrayBuffer` and wasm32 linear memory both cap around 2–4 GiB — that is the failure mode this product exists to avoid. The desktop GPUIX build is in scope **only if** React never sees archive bytes. The GPUIX browser/`bun run web` target is out of scope.
 
@@ -45,19 +45,21 @@ Load-bearing decision: [docs/adr/0001-in-process-session.md](docs/adr/0001-in-pr
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Tests, docs, CI, review |
 | [START-HERE.md](START-HERE.md) | Short agent on-ramp |
 
-## How to run (once W0 lands)
+## How to run
 
-W0 has not landed. After the scaffold exists:
+Desktop GPUIX only. Do not use a GPUIX browser/Wasm target.
 
 ```bash
-# UI process (GPUIX desktop — not `bun run web`)
+# UI process
 cd app && bun install && bun run dev
 
-# Native crate (napi cdylib; not wired until W1)
-cargo check -p native
+# Native crate (unwired stub; napi session wiring comes later)
+cargo test -p native
 ```
 
-Window: 1100×720, title `ratarmount`, placeholder “Open an archive”.
+Window: 1100×720, title `ratarmount`, placeholder “Open an archive”. Opening an archive is not implemented yet.
+
+The native window title is a **manual** smoke check. Automated coverage is `cargo test -p native` and `bun test` in `app/`.
 
 ## Platforms (v1)
 

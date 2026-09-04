@@ -82,9 +82,9 @@ Before every commit:
 
 ```bash
 cargo fmt --all
-cargo clippy -p native --all-targets -- -D warnings   # when native/ exists
-cargo test -p native                                  # when tests exist
-# bun test  (when app/ tests exist)
+cargo clippy -p native --all-targets -- -D warnings
+cargo test -p native
+(cd app && bun test)
 ```
 
 Do **not** push code that fails `cargo fmt --check`.
