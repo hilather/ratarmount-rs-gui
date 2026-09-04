@@ -10,22 +10,47 @@
 | Bundled `ratarmount` CLI | FUSE “Reveal as folder”, familiar CLI on PATH, `--http` fallback if session HTTP is not ready, same version as the GUI |
 | System `ratarmount` on PATH | Used only if bundle missing and versions match |
 
-Do **not** make the GUI a wrapper that shells out for `list` / `extract`. That reintroduces process-hop latency and makes progress/cancel messy.
+Do **not** make the GUI a wrapper that shells out for `list` / `extract`. That reintroduces process-hop latency and makes progress/cancel messy. The bundled CLI is **not** a list/extract backend.
 
 ## Version pin
 
-GUI release `X.Y.Z` bundles CLI `X.Y.Z` from the same ratarmount-rs tag.  
+GUI installer version **is the engine tag**. Source of truth: [`packaging/engine-pin`](../../packaging/engine-pin) (currently `0.1.29`).  
+`VERSION` / tag `vX.Y.Z` must match that pin (`packaging/version.sh`). Distro `Depends: ratarmount (>= X.Y.Z)` uses the same pin. Standalone bundles copy the CLI from the matching `ratarmount-rs` GitHub Release asset.
+
 On startup, if PATH binary exists and `ratarmount --version` ≠ bundled, prefer bundled for FUSE/HTTP spawned from the GUI. Show a settings note when they differ.
+
+`native/Cargo.toml` crate version may lag the installer pin until workspace versions unify; **packages are stamped from `engine-pin`**, not from the native crate.
+
+## Scripts (W7)
+
+| Script | Artifact |
+|---|---|
+| [`packaging/build-linux-portable.sh`](../../packaging/build-linux-portable.sh) | Standalone `.tar.gz`: `ratarmount-gui` + `ratarmount` in the same prefix |
+| [`packaging/build-linux-packages.sh`](../../packaging/build-linux-packages.sh) | `.deb` / `.rpm` via nfpm. **Depends: ratarmount (>= pin)**. **Never** `/usr/bin/ratarmount` |
+| [`packaging/build-macos-app.sh`](../../packaging/build-macos-app.sh) | `ratarmount.app` in a `.tar.gz`; CLI at `Contents/MacOS/ratarmount` |
+| [`packaging/build-windows-msi.sh`](../../packaging/build-windows-msi.sh) | Staged prefix + WiX 4 `.wxs` (HKCU `RegistryValue`, native addon when present); `.msi` when `wix` is on PATH. CLI next to `ratarmount-gui.exe` |
+| [`packaging/fetch-engine-cli.sh`](../../packaging/fetch-engine-cli.sh) | Download the pin-matched CLI from `hilather/ratarmount-rs` releases |
+| [`packaging/macos-notarize.sh`](../../packaging/macos-notarize.sh) | Codesign + notarytool **when** `CODESIGN_IDENTITY` / Apple API key exist; otherwise skip |
+| [`packaging/generate-icons.sh`](../../packaging/generate-icons.sh) | PNG from [`packaging/icons/ratarmount-gui.svg`](../../packaging/icons/ratarmount-gui.svg) |
+
+Standalone scripts **refuse to invent a stub CLI**. Pass `RATARMOUNT_CLI=/path/to/ratarmount` or `FETCH_CLI=1`. Distro packages do not need a CLI file.
+
+Tests: `bash packaging/run-tests.sh` — layout, Depends field (yaml always; packed `.deb` control when nfpm is available), no duplicate CLI, version pin, tag-job dry-run.
 
 ## What each installer contains
 
 **Distro `.deb` / `.rpm` (Depends, no duplicate CLI):**
 
 ```
-ratarmount-gui          # GPUIX + native cdylib + Bun-compiled app
-README / LICENSE
-integrations            # desktop/plist/registry fragments
+/usr/bin/ratarmount-gui
+/usr/libexec/ratarmount-gui/          # napi .node when present
+/usr/share/applications/ratarmount-gui.desktop
+/usr/share/mime/packages/ratarmount-gui.xml
+/usr/share/icons/hicolor/scalable/apps/ratarmount-gui.svg
+/usr/share/icons/hicolor/256x256/apps/ratarmount-gui.png
+/usr/share/doc/ratarmount-gui/        # README, LICENSE, RUNTIME.txt, VERSION
 # CLI: not shipped; package Depends: ratarmount (>= X.Y.Z)
+# fuse3 is Recommends (Reveal as folder), not Depends
 ```
 
 **Standalone portable tarball / macOS `.app` / Windows msi (bundle CLI):**
@@ -33,8 +58,9 @@ integrations            # desktop/plist/registry fragments
 ```
 ratarmount-gui          # GPUIX + native cdylib + Bun-compiled app
 ratarmount              # CLI, same tag, next to the GUI (macOS: Contents/MacOS/ratarmount)
-README / LICENSE
+README / LICENSE / RUNTIME.txt / VERSION
 integrations            # desktop/plist/registry fragments
+icons
 ```
 
 Optional later: a “slim” build without the CLI for people who already installed the engine.
@@ -43,13 +69,13 @@ Optional later: a “slim” build without the CLI for people who already instal
 
 | Platform | Artifact | Notes |
 |---|---|---|
-| Linux amd64 / arm64 | `.deb`, `.rpm`, portable `.tar.gz` | Match engine packaging style. Install binaries to `/usr/bin` or `/usr/libexec/ratarmount-gui/` + wrappers. |
-| macOS arm64 | signed `.app` inside `.tar.gz` or `.dmg` | CLI inside `Contents/MacOS/ratarmount`. Intel deferred like the engine. |
-| Windows x64 | `.msix` or WiX `.msi` | CLI next to `ratarmount-gui.exe`. No FUSE. |
+| Linux amd64 / arm64 | `.deb`, `.rpm`, portable `.tar.gz` | Match engine packaging style. Distro: `/usr/bin` + `/usr/libexec/ratarmount-gui/`. Portable: same prefix, glibc 2.31 baseline name. |
+| macOS arm64 | signed `.app` inside `.tar.gz` or `.dmg` | CLI inside `Contents/MacOS/ratarmount`. Intel deferred like the engine. Notarize as available. |
+| Windows x64 | `.msix` or WiX `.msi` | CLI next to `ratarmount-gui.exe`. No FUSE. Engine Windows CLI asset is G6-gated; pass `RATARMOUNT_CLI`. |
 
-Reuse engine cosign/OIDC for GUI artifacts if the same GitHub org publishes them.
+Reuse engine cosign/OIDC for GUI artifacts if the same GitHub org publishes them. Workflow: [`.github/workflows/packages.yml`](../../.github/workflows/packages.yml) on tag `v*`.
 
-## Linux package layout (proposed)
+## Linux package layout
 
 **Distro `.deb` / `.rpm` — GUI does not own `/usr/bin/ratarmount`:**
 
@@ -70,7 +96,7 @@ If both `ratarmount` (engine deb) and `ratarmount-gui` ship `/usr/bin/ratarmount
 2. GUI package ships CLI as `ratarmount-gui-engine` and never owns `/usr/bin/ratarmount`.
 3. Combined metapackage `ratarmount-desktop` = engine + GUI.
 
-**v1 recommendation:**
+**v1 recommendation (implemented):**
 
 - Distro packages: GUI **depends on** engine package; does not duplicate the binary.
 - Portable tarball / macOS .app / Windows msi: **bundle** the CLI because there is no package manager guarantee.
@@ -88,13 +114,19 @@ ratarmount-rs-gui tag vX.Y.Z
 CI of this repository either:
 
 - path-dep on a submodule / sibling checkout, or
-- crates.io / git tag dep plus download of the CLI asset.
+- crates.io / git tag dep plus download of the CLI asset (`packaging/fetch-engine-cli.sh`).
+
+Do **not** vendor a fake `ratarmount` binary in git. Cache downloads under `third_party/cli/` (gitignored).
 
 ### Native crate pin (W2)
 
 **Not pinned (2026-08-29).** Sibling engine `0.1.29` has no `ratarmount-session` crate and no `ratarmount-core::session`. `native/Cargo.toml` has a reserved `session` feature (`session = []`) and a commented git-tag sketch with `default-features = false`. Allowlist: none. Never enable `fuse` / `nfs` / `smb` / `http`. Do **not** import the `ratarmount` binary crate to reach `factory.rs`.
 
 When G0.2 lands, pin the chosen crate from the matching engine git tag (same `X.Y.Z` as the bundled CLI) and flip `session = ["dep:ratarmount-session"]` (or `ratarmount-core` with a `session` feature).
+
+### Honest W7 status
+
+Scripts, icons, layout/Depends tests, and a tag-job dry-run are in tree. A portable tarball / macOS `.app` that **runs on a clean machine and opens a TAR** still needs a compiled GPUIX GUI binary plus the in-process session (engine G0–G2). Engine CLI assets for `v0.1.29` exist and can be fetched; they are not a list/extract backend. Signed/notarized artifacts are produced **as available** (cosign OIDC on tag when binaries exist; Apple notarize skipped without a cert — Right-click → Open).
 
 ## Auto-update
 
@@ -109,4 +141,16 @@ Later: same channel as the engine if one exists.
 | macOS | — | macFUSE or FUSE-T (Reveal as folder) |
 | Windows | WebView **not** required (GPUI is native) | — |
 
+FUSE is optional UX. Distro packages **Recommends: fuse3**; they do **not** Depends on fuse3. Electron / WebView / Chromium are not runtime dependencies.
+
 libarchive: prefer static link in the native cdylib so the GUI does not depend on Homebrew kegs at runtime. If dynamic, document it the same way the engine does.
+
+### Cosign verification (when release blobs exist)
+
+```bash
+cosign verify-blob \
+  --bundle ratarmount-gui_0.1.29_amd64.deb.cosign.bundle \
+  --certificate-identity-regexp 'https://github.com/hilather/ratarmount-rs-gui/.github/workflows/packages.yml@.*' \
+  --certificate-oidc-issuer https://token.actions.githubusercontent.com \
+  ratarmount-gui_0.1.29_amd64.deb
+```

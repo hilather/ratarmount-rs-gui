@@ -64,11 +64,11 @@ Role: `Viewer` (not Editor) in v1.
 
 Services / Finder Quick Actions (later): Extract Here. v1 can ship a `.workflow` or just document drag-onto-app.
 
-Gatekeeper: signed + notarized `.app` (engine already signs tarballs with cosign; GUI needs Apple signing if distributed as .app). Until cert exists, document “Right-click → Open” like the engine macOS tarball.
+Gatekeeper: signed + notarized `.app` (engine already signs tarballs with cosign; GUI needs Apple signing if distributed as .app). Until cert exists, document “Right-click → Open” like the engine macOS tarball. `packaging/build-macos-app.sh` stamps `CFBundleShortVersionString` / `CFBundleVersion` from `packaging/engine-pin` and sets `CFBundleIconFile=ratarmount-gui`.
 
 ## Windows
 
-Installer writes (`integrations/windows/ratarmount-gui.reg`):
+Installer writes (`integrations/windows/ratarmount-gui.reg`; WiX `RegistryValue` in `packaging/windows/ratarmount-gui.wxs` uses `[INSTALLFOLDER]ratarmount-gui.exe`):
 
 ```
 HKCU\Software\Classes\.tar\OpenWithProgids\ratarmount-gui.Archive

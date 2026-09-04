@@ -1,0 +1,72 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- WiX 4 source. Staged by packaging/build-windows-msi.sh. CLI sits next to the GUI.
+     HKCU associations match integrations/windows/ratarmount-gui.reg (ExtractTo uses --extract-to -- "%1").
+     Native addon File entries are filled when a napi addon is staged. -->
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="ratarmount"
+      Manufacturer="ratarmount-rs-gui"
+      Version="$(var.ProductVersion)"
+      UpgradeCode="8f3c2a91-6b47-4d0e-9e5a-1c7b4f2d8e06"
+      Scope="perMachine">
+    <MajorUpgrade DowngradeErrorMessage="A newer version of ratarmount is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+    <StandardDirectory Id="ProgramFiles64Folder">
+      <Directory Id="INSTALLFOLDER" Name="ratarmount-gui">
+        <Component Id="GuiBin" Guid="*">
+          <File Id="GuiExe" Source="$(var.StageDir)\ratarmount-gui.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="EngineCli" Guid="*">
+          <File Id="CliExe" Source="$(var.StageDir)\ratarmount.exe" KeyPath="yes" />
+        </Component>
+        <Component Id="License" Guid="*">
+          <File Id="LicenseFile" Source="$(var.StageDir)\LICENSE" KeyPath="yes" />
+        </Component>
+        <Component Id="RuntimeDoc" Guid="*">
+          <File Id="RuntimeTxt" Source="$(var.StageDir)\RUNTIME.txt" KeyPath="yes" />
+        </Component>
+        <Component Id="Readme" Guid="*">
+          <File Id="ReadmeFile" Source="$(var.StageDir)\README.md" KeyPath="yes" />
+        </Component>
+        <Component Id="VersionFile" Guid="*">
+          <File Id="VersionTxt" Source="$(var.StageDir)\VERSION" KeyPath="yes" />
+        </Component>
+        <Component Id="IconPng" Guid="*">
+          <File Id="IconFile" Source="$(var.StageDir)\ratarmount-gui.png" KeyPath="yes" />
+        </Component>
+        <Component Id="AssociationsReg" Guid="*">
+          <File Id="RegFragment" Source="$(var.StageDir)\ratarmount-gui.reg" KeyPath="yes" />
+        </Component>
+        <!-- INSTALLFOLDER has a trailing backslash. Do not register .exe / .msi. -->
+        <Component Id="AssociationsHkcu" Guid="b3e1d847-2c9a-4f5e-8a17-6d4c91e2b0f3">
+          <RegistryValue Root="HKCU" Key="Software\Classes\.tar\OpenWithProgids" Name="ratarmount-gui.Archive" Type="string" Value="" KeyPath="yes" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\.tar.gz\OpenWithProgids" Name="ratarmount-gui.Archive" Type="string" Value="" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\.tgz\OpenWithProgids" Name="ratarmount-gui.Archive" Type="string" Value="" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\.tar.zst\OpenWithProgids" Name="ratarmount-gui.Archive" Type="string" Value="" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\.zip\OpenWithProgids" Name="ratarmount-gui.Archive" Type="string" Value="" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\.7z\OpenWithProgids" Name="ratarmount-gui.Archive" Type="string" Value="" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\ratarmount-gui.Archive" Type="string" Value="Archive" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\ratarmount-gui.Archive\shell\open" Type="string" Value="Open" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\ratarmount-gui.Archive\shell\open\command" Type="expandable" Value="&quot;[INSTALLFOLDER]ratarmount-gui.exe&quot; &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\ratarmount-gui.Archive\shell\ExtractHere" Type="string" Value="Extract here" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\ratarmount-gui.Archive\shell\ExtractHere\command" Type="expandable" Value="&quot;[INSTALLFOLDER]ratarmount-gui.exe&quot; --extract-here &quot;%1&quot;" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\ratarmount-gui.Archive\shell\ExtractTo" Type="string" Value="Extract to…" />
+          <RegistryValue Root="HKCU" Key="Software\Classes\ratarmount-gui.Archive\shell\ExtractTo\command" Type="expandable" Value="&quot;[INSTALLFOLDER]ratarmount-gui.exe&quot; --extract-to -- &quot;%1&quot;" />
+        </Component>
+        @NATIVE_DIRECTORY@
+      </Directory>
+    </StandardDirectory>
+    <Feature Id="Main" Title="ratarmount" Level="1">
+      <ComponentRef Id="GuiBin" />
+      <ComponentRef Id="EngineCli" />
+      <ComponentRef Id="License" />
+      <ComponentRef Id="RuntimeDoc" />
+      <ComponentRef Id="Readme" />
+      <ComponentRef Id="VersionFile" />
+      <ComponentRef Id="IconPng" />
+      <ComponentRef Id="AssociationsReg" />
+      <ComponentRef Id="AssociationsHkcu" />
+      @NATIVE_COMPONENT_REF@
+    </Feature>
+  </Package>
+</Wix>

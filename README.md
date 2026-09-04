@@ -34,6 +34,8 @@ One OS process: GPUIX React talks **only** to the napi contract in [`docs/archit
 
 Load-bearing decision: [docs/adr/0001-in-process-session.md](docs/adr/0001-in-process-session.md).
 
+Installers (scripts in [`packaging/`](packaging/)): distro `.deb`/`.rpm` **Depends:** `ratarmount` and do not ship `/usr/bin/ratarmount`; portable tarball / macOS `.app` / Windows prefix **bundle** the version-matched CLI next to the GUI. FUSE is optional. No Electron/WebView. See [docs/architecture/03-distribution.md](docs/architecture/03-distribution.md). `bash packaging/run-tests.sh` checks layout and the Depends field.
+
 ## Docs
 
 | Doc | Why |
