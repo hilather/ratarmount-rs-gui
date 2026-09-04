@@ -41,9 +41,15 @@ jobs:
       - name: Install
         run: bun install --frozen-lockfile
         working-directory: app
-      - name: Test
-        run: bun test
-        working-directory: app
+      - name: No conflict markers
+        run: |
+          if git grep -nE '^<<<<<<<' -- ':!*.lock' ':!**/bun.lock' .; then
+            echo "git conflict markers in the tree" >&2
+            exit 1
+          fi
       - name: Typecheck
         run: bun run typecheck
+        working-directory: app
+      - name: Test
+        run: bun test
         working-directory: app

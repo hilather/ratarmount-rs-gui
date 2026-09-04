@@ -1,6 +1,10 @@
 import {
   CommandError,
+  defaultConfig,
+  PREVIEW_CEILING_BYTES,
+  type CacheClearResult,
   type Config,
+  type ConfigPatch,
   type DirEnt,
   type ExtractOpts,
   type ExtractPlan,
@@ -23,7 +27,6 @@ export const NINE_MIB = 9 * 1024 * 1024
 
 const LIST_LIMIT_DEFAULT = 200
 const LIST_LIMIT_MAX = 500
-const PREVIEW_DEFAULT = 8 * 1024 * 1024
 
 type JobSucceededListener = (event: JobSucceededEvent) => void
 type JobFailedListener = (event: JobFailedEvent) => void
@@ -37,6 +40,8 @@ export type FakeNative = NativeAddon & {
   extractCalls: ExtractOpts[]
   previewCalls: { sessionId: number; path: string }[]
   extractPlanCalls: { sessionId: number; members: string[]; destDir: string }[]
+  config: Config
+  cacheClears: number
   written: Map<string, Uint8Array>
   extractMode: 'ok' | 'hold' | 'busy' | 'path-escape'
   completeExtract(jobId: number): void
@@ -53,6 +58,8 @@ export function createFakeNative(
     extractPlan?: Partial<ExtractPlan>
     config?: Partial<Config>
     extraFiles?: { parent: string; name: string; size: number; body?: string }[]
+    siblingNotWritable?: boolean
+    cacheRemoved?: number
   } = {},
 ): FakeNative {
   let nextSession = 1
@@ -71,16 +78,21 @@ export function createFakeNative(
   const cancelled: JobCancelledListener[] = []
   const extractProgress: ExtractProgressListener[] = []
   const heldJobs = new Set<number>()
-  const config: Config = {
-    extract: {
-      overwrite: options.config?.extract?.overwrite ?? 'ask',
-      allowUnsafePaths: options.config?.extract?.allowUnsafePaths ?? false,
-    },
-    preview: {
-      maxBytes: options.config?.preview?.maxBytes ?? PREVIEW_DEFAULT,
-      openLargeWithSystem: options.config?.preview?.openLargeWithSystem ?? true,
-    },
+  let cacheClears = 0
+  let config = defaultConfig()
+  if (options.config?.extract) {
+    config = { ...config, extract: { ...config.extract, ...options.config.extract } }
   }
+  if (options.config?.preview) {
+    config = { ...config, preview: { ...config.preview, ...options.config.preview } }
+  }
+  if (options.config?.index) {
+    config = { ...config, index: { ...config.index, ...options.config.index } }
+  }
+  config.preview.maxBytes = Math.min(
+    options.config?.preview?.maxBytes ?? config.preview.maxBytes,
+    PREVIEW_CEILING_BYTES,
+  )
 
   const fake: FakeNative = {
     listCalls,
@@ -111,6 +123,12 @@ export function createFakeNative(
         cb(event)
       }
     },
+    get config() {
+      return config
+    },
+    get cacheClears() {
+      return cacheClears
+    },
     async pickFile() {
       return options.pickFile === undefined ? '/tmp/hello.tar' : options.pickFile
     },
@@ -119,6 +137,13 @@ export function createFakeNative(
     },
     async open(opts) {
       openCalls.push(opts)
+      if (options.siblingNotWritable && opts.policy === 'sibling') {
+        throw new CommandError(
+          'SiblingNotWritable',
+          'The directory next to the archive is not writable',
+          true,
+        )
+      }
       const mode = options.openMode ?? (opts.recreate === 'always' ? 'job' : 'session')
       if (mode === 'bad-password') {
         if (opts.password !== FAKE_ENCRYPTED_PASSWORD) {
@@ -303,7 +328,67 @@ export function createFakeNative(
       }
     },
     async getConfig() {
-      return config
+      return structuredClone(config)
+    },
+    async setConfig(patch: ConfigPatch) {
+      if (patch.index) {
+        if (patch.index.policy === 'memory') {
+          throw new CommandError('Internal', "config.index.policy cannot be 'memory'", false)
+        }
+        if (patch.index.policy) {
+          config.index.policy = patch.index.policy
+        }
+        if (patch.index.explicitPath !== undefined) {
+          config.index.explicitPath = patch.index.explicitPath
+        }
+        if (patch.index.extraDirs) {
+          config.index.extraDirs = [...patch.index.extraDirs]
+        }
+        if (patch.index.recreate) {
+          config.index.recreate = patch.index.recreate
+        }
+        if (patch.index.localCacheBytes !== undefined) {
+          config.index.localCacheBytes = Math.max(0, patch.index.localCacheBytes)
+        }
+        if (patch.index.rememberUnwritableVolumes !== undefined) {
+          config.index.rememberUnwritableVolumes = patch.index.rememberUnwritableVolumes
+        }
+        if (patch.index.rememberedVolumes) {
+          config.index.rememberedVolumes = [...patch.index.rememberedVolumes]
+        }
+      }
+      if (patch.preview) {
+        if (patch.preview.maxBytes !== undefined) {
+          config.preview.maxBytes = Math.min(Math.max(0, patch.preview.maxBytes), PREVIEW_CEILING_BYTES)
+        }
+        if (patch.preview.openLargeWithSystem !== undefined) {
+          config.preview.openLargeWithSystem = patch.preview.openLargeWithSystem
+        }
+      }
+      if (patch.extract) {
+        if (patch.extract.overwrite) {
+          config.extract.overwrite = patch.extract.overwrite
+        }
+        if (patch.extract.allowUnsafePaths !== undefined) {
+          config.extract.allowUnsafePaths = patch.extract.allowUnsafePaths
+        }
+      }
+      if (patch.engine) {
+        if (patch.engine.bundleCli !== undefined) {
+          config.engine.bundleCli = patch.engine.bundleCli
+        }
+        if (patch.engine.cliPath !== undefined) {
+          config.engine.cliPath = patch.engine.cliPath
+        }
+      }
+      if (patch.recent?.paths) {
+        config.recent.paths = [...patch.recent.paths]
+      }
+      return structuredClone(config)
+    },
+    async clearLocalIndexCache(): Promise<CacheClearResult> {
+      cacheClears += 1
+      return { removed: options.cacheRemoved ?? 1 }
     },
     on(event, cb) {
       if (event === 'jobSucceeded') {

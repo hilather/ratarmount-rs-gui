@@ -12,6 +12,12 @@ import {
   type ClickMods,
   type ExplorerSnapshot,
 } from './explorer'
+import {
+  policyBadge,
+  REMEMBER_VOLUME_LABEL,
+  SIBLING_NOT_WRITABLE_DETAIL,
+  SIBLING_NOT_WRITABLE_PROMPT,
+} from './settings'
 import { PLACEHOLDER } from './window'
 
 const CANVAS = '#1A1A1A'
@@ -30,6 +36,7 @@ export type ExplorerHandlers = {
   onClose(): void
   onExtract(): void
   onExtractAll(): void
+  onSettings(): void
   onCrumb(path: string): void
   onRowClick(index: number, clickCount: number, mods?: ClickMods): void
   onKey(key: string, mods?: ClickMods): void
@@ -42,6 +49,9 @@ export type ExplorerHandlers = {
   onDismissDialog(): void
   onPasswordSubmit(password: string): void
   onExtractOpenSystem(): void
+  onSiblingUseCache(): void
+  onSiblingCancel(): void
+  onSiblingRemember(): void
 }
 
 function modsFrom(event: EventPayload): ClickMods {
@@ -52,7 +62,10 @@ function modsFrom(event: EventPayload): ClickMods {
   }
 }
 
-export function explorerHandlers(controller: ExplorerController): ExplorerHandlers {
+export function explorerHandlers(
+  controller: ExplorerController,
+  options: { onSettings?: () => void } = {},
+): ExplorerHandlers {
   return {
     onOpen: () => {
       void controller.openPicked()
@@ -65,6 +78,9 @@ export function explorerHandlers(controller: ExplorerController): ExplorerHandle
     },
     onExtractAll: () => {
       void controller.extractAllTo()
+    },
+    onSettings: () => {
+      options.onSettings?.()
     },
     onCrumb: (path) => {
       void controller.enterPath(path)
@@ -106,6 +122,15 @@ export function explorerHandlers(controller: ExplorerController): ExplorerHandle
     onExtractOpenSystem: () => {
       void controller.extractOpenWithSystem()
     },
+    onSiblingUseCache: () => {
+      void controller.confirmSiblingUseCache()
+    },
+    onSiblingCancel: () => {
+      controller.cancelSiblingDialog()
+    },
+    onSiblingRemember: () => {
+      controller.toggleSiblingRemember()
+    },
   }
 }
 
@@ -115,6 +140,7 @@ export function ExplorerView({
   onClose,
   onExtract,
   onExtractAll,
+  onSettings,
   onCrumb,
   onRowClick,
   onKey,
@@ -127,6 +153,9 @@ export function ExplorerView({
   onDismissDialog,
   onPasswordSubmit,
   onExtractOpenSystem,
+  onSiblingUseCache,
+  onSiblingCancel,
+  onSiblingRemember,
 }: { model: ExplorerSnapshot } & ExplorerHandlers) {
   const crumbs = crumbsFor(model.path)
   const hasSession = model.archivePath != null && model.status !== 'idle'
@@ -191,6 +220,12 @@ export function ExplorerView({
           label="Extract all"
           onClick={onExtractAll}
           disabled={!model.nativeReady || !hasSession || model.status === 'opening'}
+        />
+        <ToolButton
+          testId="settings"
+          label="Settings"
+          onClick={onSettings}
+          disabled={!model.nativeReady && model.status !== 'error'}
         />
       </div>
 
@@ -263,6 +298,9 @@ export function ExplorerView({
             ? countLabel(model.totalHint, model.entries.length, model.nextCursor !== null)
             : '—'}
         </text>
+        <text testId="status-policy" style={{ color: MUTED, fontSize: 12 }}>
+          {policyBadge(model.policy)}
+        </text>
         <text testId="status-index" style={{ color: MUTED, fontSize: 12 }}>
           {model.indexPath ? shortenPath(model.indexPath) : '—'}
         </text>
@@ -276,6 +314,15 @@ export function ExplorerView({
           onOverwriteReplace={onOverwriteReplace}
           onDismissDialog={onDismissDialog}
           onPasswordSubmit={onPasswordSubmit}
+        />
+      ) : null}
+
+      {model.siblingDialog ? (
+        <SiblingDialog
+          remember={model.siblingDialog.remember}
+          onUseCache={onSiblingUseCache}
+          onCancel={onSiblingCancel}
+          onRemember={onSiblingRemember}
         />
       ) : null}
     </div>
@@ -423,6 +470,73 @@ function Browser({
             })}
           </virtual-list>
         )}
+      </div>
+    </div>
+  )
+}
+
+function SiblingDialog({
+  remember,
+  onUseCache,
+  onCancel,
+  onRemember,
+}: {
+  remember: boolean
+  onUseCache: () => void
+  onCancel: () => void
+  onRemember: () => void
+}) {
+  return (
+    <div
+      testId="sibling-dialog"
+      style={{
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
+        bottom: 0,
+        alignItems: 'center',
+        justifyContent: 'center',
+        backgroundColor: '#00000088',
+      }}
+    >
+      <div
+        style={{
+          width: 420,
+          backgroundColor: PANEL,
+          borderWidth: 1,
+          borderColor: BORDER,
+          borderRadius: 8,
+          paddingLeft: 16,
+          paddingRight: 16,
+          paddingTop: 16,
+          paddingBottom: 16,
+          flexDirection: 'column',
+          gap: 12,
+        }}
+      >
+        <text testId="sibling-dialog-title" style={{ color: TEXT, fontSize: 16 }}>
+          {SIBLING_NOT_WRITABLE_PROMPT}
+        </text>
+        <text style={{ color: MUTED, fontSize: 13 }}>{SIBLING_NOT_WRITABLE_DETAIL}</text>
+        <div
+          testId="sibling-remember"
+          onClick={onRemember}
+          style={{ flexDirection: 'row', alignItems: 'center', gap: 8, cursor: 'pointer' }}
+        >
+          <text testId="sibling-remember-mark" style={{ color: TEXT, fontSize: 14 }}>
+            {remember ? '[x]' : '[ ]'}
+          </text>
+          <text style={{ color: TEXT, fontSize: 13 }}>{REMEMBER_VOLUME_LABEL}</text>
+        </div>
+        <div style={{ flexDirection: 'row', gap: 8, justifyContent: 'flex-end' }}>
+          <ToolButton testId="sibling-cancel" label="Cancel" onClick={onCancel} />
+          <ToolButton
+            testId="sibling-use-cache"
+            label="Use user cache"
+            onClick={onUseCache}
+          />
+        </div>
       </div>
     </div>
   )

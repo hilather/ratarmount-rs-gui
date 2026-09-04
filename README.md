@@ -62,6 +62,7 @@ cd native && bun install && bun run build
 ```
 
 Window: 1100×720, title `ratarmount`. Open an archive from the toolbar (file picker). Breadcrumbs, a paged `<virtual-list>` (name/size/mtime), a preview pane, and a status bar show the current directory. Extract to… writes selected members to a picked folder (`skip`/`replace`; `'ask'` is a UI dialog). Members over the default 8 MiB preview cap are skipped with “Extract and open with system.” Encrypted archives prompt for a password on `BadPassword` (the secret is not stored). Enter a folder with Enter or double-click; Backspace goes up. Listing stays page-sized (default 200, max 500); it does not dump the catalog into React state.
+Window: 1100×720, title `ratarmount`. Open an archive from the toolbar (file picker). Breadcrumbs, a paged `<virtual-list>` (name/size/mtime), and a status bar show the current directory plus the index policy. Enter a folder with Enter or double-click; Backspace goes up. Listing stays page-sized (default 200, max 500); it does not dump the catalog into React state. **Settings** persist `config.toml` (index policy, recreate, preview cap, extra index dirs, cache cap). Policy `memory` is hidden. Native clamps `preview.max_bytes` to 64 MiB.
 
 Build the napi addon so Open can call `pickFile`/`list`. `bun run dev` still starts if the `.node` is missing and surfaces that on Open. Set `RGUI_FAKE=1` so `open` accepts any path and serves the fake catalog.
 

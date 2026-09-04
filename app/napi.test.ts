@@ -2,9 +2,11 @@ import { expect, test } from 'bun:test'
 
 import {
   CommandError,
+  normalizeConfig,
   normalizeDirPage,
   normalizeExtractPlan,
   normalizeOpenResult,
+  PREVIEW_CEILING_BYTES,
   wrapNativeModule,
 } from './napi'
 
@@ -61,6 +63,11 @@ test('wrapNativeModule exposes pickFile/open/list/close/on', async () => {
       extract: { overwrite: 'ask', allowUnsafePaths: false },
       preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
     }),
+    setConfig: () => ({
+      extract: { overwrite: 'ask', allowUnsafePaths: false },
+      preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
+    }),
+    clearLocalIndexCache: () => ({ removed: 0 }),
     on: () => {},
   })
   expect(await addon.pickFile()).toBe('/tmp/hello.tar')
@@ -95,6 +102,10 @@ test('wrapNativeModule maps command errors onto CommandError', async () => {
       extract: { overwrite: 'ask', allowUnsafePaths: false },
       preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
     }),
+    setConfig: () => {
+      throw new Error('no config')
+    },
+    clearLocalIndexCache: () => ({ removed: 0 }),
     on: () => {
       throw new Error('bad event')
     },
@@ -142,6 +153,11 @@ test('wrapNativeModule extract rejects overwrite ask before native', async () =>
       extract: { overwrite: 'ask', allowUnsafePaths: false },
       preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
     }),
+    setConfig: () => ({
+      extract: { overwrite: 'ask', allowUnsafePaths: false },
+      preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
+    }),
+    clearLocalIndexCache: () => ({ removed: 0 }),
     on: () => {},
   })
   try {
@@ -170,4 +186,15 @@ test('normalizeExtractPlan caps conflicts at 50', () => {
   expect(plan.conflicts.length).toBeLessThanOrEqual(50)
   expect(plan.conflictsTruncated).toBe(true)
   expect(plan.conflictCount).toBe(1000)
+})
+
+test('normalizeConfig hides memory and clamps 65 MiB to 64 MiB', () => {
+  const cfg = normalizeConfig({
+    index: { policy: 'memory', extra_dirs: ['/x'], remembered_volumes: ['/vol'] },
+    preview: { max_bytes: 65 * 1024 * 1024 },
+  })
+  expect(cfg.index.policy).toBe('sibling')
+  expect(cfg.preview.maxBytes).toBe(PREVIEW_CEILING_BYTES)
+  expect(cfg.index.extraDirs).toEqual(['/x'])
+  expect(cfg.index.rememberedVolumes).toEqual(['/vol'])
 })

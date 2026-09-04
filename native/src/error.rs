@@ -92,6 +92,10 @@ impl ApiError {
     pub fn not_writable(message: impl Into<String>) -> Self {
         Self::new(ErrorCode::NotWritable, message)
     }
+
+    pub fn sibling_not_writable(message: impl Into<String>) -> Self {
+        Self::new(ErrorCode::SiblingNotWritable, message)
+    }
 }
 
 impl fmt::Display for ApiError {

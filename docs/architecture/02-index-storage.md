@@ -116,6 +116,7 @@ extra_dirs = []
 recreate = "if-invalid"            # never | if-invalid | always
 local_cache_bytes = 2147483648
 remember_unwritable_volumes = true
+remembered_volumes = []            # archive parent dirs (until G4 volume ids)
 
 [preview]
 max_bytes = 8388608
@@ -131,8 +132,12 @@ bundle_cli = true
 cli_path = ""                      # empty = bundled then PATH
 ```
 
+Native loads this file on startup (`getConfig` / `setConfig` persist it). `policy = "memory"` is coerced to `sibling` and never written back. `preview.max_bytes` is clamped to **64 MiB** on load and save. Passwords are ignored if present and never written.
+
+Until engine G4, `resolve_index` is `TODO(engine)` in this repo. The GUI does **not** invent `local-index-v1` sha256 keys. `SiblingNotWritable` is raised from a native sibling-dir writability probe (retryable). Remember-volume stores archive parent paths in `remembered_volumes`; a later G4 helper should replace that keying.
+
 ## Privacy / multi-user
 
-- Cache dirs mode 0700.
+- Cache dirs mode 0700 (config dir is also created 0700).
 - Do not store archive member names in world-readable logs.
-- “Clear index cache” button in settings wipes `local-index-v1` only (not the user’s sibling files).
+- “Clear index cache” button in settings wipes `local-index-v1` only (not the user’s sibling files). napi: `clearLocalIndexCache()`.
