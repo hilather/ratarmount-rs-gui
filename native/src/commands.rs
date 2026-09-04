@@ -21,6 +21,9 @@ impl NativeApp {
                 "policy 'memory' is test-only (RGUI_FAKE=1 or native --self-test)",
             ));
         }
+        if !self.fake_or_test() {
+            return crate::session::open_real(self, opts);
+        }
         if !self.can_open_source(&opts.source) {
             discard_secret(opts.password);
             return Err(ApiError::not_found(
@@ -32,7 +35,7 @@ impl NativeApp {
         let source = opts.source;
         if opts.recreate == Recreate::Always {
             let session_id = self.alloc_session(source);
-            let job_id = self.alloc_job(JobKind::Index, Some(session_id));
+            let (job_id, _) = self.alloc_job(JobKind::Index, Some(session_id));
             self.emit(Event::IndexProgress {
                 job_id,
                 phase: "scan".to_string(),
@@ -171,7 +174,7 @@ impl NativeApp {
             let _ = normalize_member_path(member, allow_dotdot)?;
         }
 
-        let job_id = self.alloc_job(JobKind::Extract, Some(session_id));
+        let (job_id, _) = self.alloc_job(JobKind::Extract, Some(session_id));
         if opts.dest_dir == STUB_BUSY_DEST {
             if let Some(job) = self.jobs.get_mut(&job_id) {
                 job.status = JobStatus::Failed;
@@ -208,6 +211,7 @@ impl NativeApp {
             .jobs
             .get_mut(&job_id)
             .ok_or_else(|| ApiError::not_found(format!("job {job_id} not found")))?;
+        job.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
         if job.status == JobStatus::Running {
             job.status = JobStatus::Cancelled;
             self.emit(Event::JobCancelled { job_id });

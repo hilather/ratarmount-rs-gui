@@ -22,7 +22,7 @@ This document synthesizes the planning pack at `/home/brewerm/Downloads/ratarmou
 
 The engine today is a CLI factory plus export adapters (`ratarmount/src/factory.rs` lives in the **binary** crate, `ratarmount-fuse`, `ratarmount-http`, …). Verified on 2026-08-29: there is **no** `ratarmount-session` crate, index build with structured progress is CLI-only (`ratarmount --no-mount -c`), and `find` is CLI + control socket. The GUI therefore depends on engine phases G0–G7.
 
-**Working G-list:** `docs/engine/gui-embedder-support.md` in **this** repo. That file has **not** been copied into the sibling engine checkout (`ratarmount-rs/docs/tasks/gui-embedder-support.md` does not exist yet). Canonical **once merged** via an **external engine PR** (not a GUI PR). Until then, GUI and engine agents use the snapshot.
+**Working G-list:** `docs/engine/gui-embedder-support.md` in **this** repo. The engine checkout has `docs/tasks/gui-embedder-support.md` (doc drop as of 2026-08-29) but no `ratarmount-session` crate. Until G0–G2 land, GUI and engine agents use this snapshot; after the crate/API exists, the engine file is canonical.
 
 UI work can proceed against a fake in-memory catalog; it must not invent a second index format. Do **not** import the `ratarmount` binary crate to reach `factory.rs` — that is why W2 is gated on **G0** (crate home / factory extraction) as well as G1+G2.
 
@@ -643,7 +643,7 @@ W8 documents the crash log path. Native `--self-test` is the headless health che
 
 This repository implements GUI waves W0–W8. Engine phases G0–G7 live in **ratarmount-rs** and are an **external dependency**, not PRs in this repo.
 
-**External engine PR (not in this PR Plan):** copy `docs/engine/gui-embedder-support.md` → `ratarmount-rs/docs/tasks/gui-embedder-support.md` (G0.1). Until that lands, the snapshot in this repo is the working G-list.
+**External engine PR (not in this PR Plan):** G0.1 doc drop is in `ratarmount-rs/docs/tasks/gui-embedder-support.md`; G0–G2 / `ratarmount-session` are still missing. Until the crate/API lands, the snapshot in this repo is the working G-list.
 
 ### Suggested first slice (ship a demo)
 
@@ -707,7 +707,7 @@ Decisions already made in the pack are recorded under **Key Decisions**, not reo
 
 - Planning pack: `/home/brewerm/Downloads/ratarmount-rs-gui-plans/`
 - This repo: `docs/architecture/01-architecture.md` … `05-napi-contract.md`, `docs/design/00-overview.md`, `docs/design/07-acceptance.md`, `docs/implementation/06-agent-waves.md`, `docs/implementation/waves/W0.md`–`W8.md`, `docs/implementation/plan.md`
-- Engine task list **working copy:** `docs/engine/gui-embedder-support.md` (this repo). **Canonical once merged:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` via an external engine PR (file not in the engine tree as of 2026-08-29).
+- Engine task list **working copy:** `docs/engine/gui-embedder-support.md` (this repo). Engine `docs/tasks/gui-embedder-support.md` exists (doc drop as of 2026-08-29); G0–G2 / `ratarmount-session` are still missing. After the crate/API exists, the engine file is canonical.
 - Engine: [hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs) — `Cargo.toml`, `ratarmount-index` (`INDEX_VERSION` 0.7.0), `docs/packaging.md`, **`ratarmount-rs/docs/crates-io-policy.md`** (engine tree, not this repo), `LICENSE`
 - ADR: `docs/adr/0001-in-process-session.md`
 - Agent policy: `AGENTS.md`

@@ -1,4 +1,6 @@
 use std::collections::HashMap;
+use std::sync::atomic::AtomicBool;
+use std::sync::Arc;
 
 use crate::catalog::FakeCatalog;
 use crate::events::Event;
@@ -36,6 +38,7 @@ pub struct JobState {
     pub kind: JobKind,
     pub status: JobStatus,
     pub session_id: Option<u32>,
+    pub cancel: Arc<AtomicBool>,
 }
 
 impl JobState {
@@ -45,6 +48,11 @@ impl JobState {
 
     pub fn session_id(&self) -> Option<u32> {
         self.session_id
+    }
+
+    #[cfg(test)]
+    pub fn cancel_requested(&self) -> bool {
+        self.cancel.load(std::sync::atomic::Ordering::SeqCst)
     }
 }
 
@@ -57,6 +65,7 @@ pub struct NativeApp {
     pub(crate) next_job_id: u32,
     pub(crate) config: Config,
     pub(crate) events: Vec<Event>,
+    pub(crate) last_index_debug_log: Option<String>,
 }
 
 impl NativeApp {
@@ -83,6 +92,7 @@ impl NativeApp {
             next_job_id: 1,
             config: Config::default_in_memory(),
             events: Vec::new(),
+            last_index_debug_log: None,
         }
     }
 
@@ -114,6 +124,18 @@ impl NativeApp {
         self.jobs.get(&job_id).and_then(JobState::session_id)
     }
 
+    #[cfg(test)]
+    pub fn job_cancel_requested(&self, job_id: u32) -> bool {
+        self.jobs
+            .get(&job_id)
+            .is_some_and(JobState::cancel_requested)
+    }
+
+    #[cfg(test)]
+    pub fn last_index_debug_log(&self) -> Option<&str> {
+        self.last_index_debug_log.as_deref()
+    }
+
     pub(crate) fn emit(&mut self, event: Event) {
         self.events.push(event);
     }
@@ -131,18 +153,24 @@ impl NativeApp {
         id
     }
 
-    pub(crate) fn alloc_job(&mut self, kind: JobKind, session_id: Option<u32>) -> u32 {
+    pub(crate) fn alloc_job(
+        &mut self,
+        kind: JobKind,
+        session_id: Option<u32>,
+    ) -> (u32, Arc<AtomicBool>) {
         let id = self.next_job_id;
         self.next_job_id = self.next_job_id.saturating_add(1);
+        let cancel = Arc::new(AtomicBool::new(false));
         self.jobs.insert(
             id,
             JobState {
                 kind,
                 status: JobStatus::Running,
                 session_id,
+                cancel: cancel.clone(),
             },
         );
-        id
+        (id, cancel)
     }
 }
 

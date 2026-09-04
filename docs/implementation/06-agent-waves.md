@@ -2,7 +2,7 @@
 
 Work is split so one agent can finish a wave without owning the whole stack.
 
-**Engine waves** (G0–G7) will live in `ratarmount-rs/docs/tasks/gui-embedder-support.md` once an **external engine PR** copies the snapshot. **Until then the working copy is** [../engine/gui-embedder-support.md](../engine/gui-embedder-support.md).  
+**Engine waves** (G0–G7) are documented in `ratarmount-rs/docs/tasks/gui-embedder-support.md` (doc drop as of 2026-08-29; crate/API still missing). **Until G0–G2 land the working copy is** [../engine/gui-embedder-support.md](../engine/gui-embedder-support.md).  
 **GUI waves** live in this repository (`docs/implementation/waves/W0.md` … `W8.md`).
 
 ```

@@ -4,7 +4,7 @@ A native GPU-rendered archive explorer that indexes and browses multi-gigabyte T
 
 GPUIX (React + Zed GPUI) in the UI process. `ratarmount-session` in-process for index / list / extract. No Electron. No webview. Archive bytes never enter the JavaScript heap.
 
-**Status:** W3 explorer chrome on the W1 fake catalog. `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount` with Open/Close, breadcrumbs, and a paged virtual list. Native commands (`pickFile`, `list`, …) are stubs against an in-memory catalog until W2.
+**Status:** W3 explorer chrome on the W1 fake catalog. W2 Session wiring is feature-gated (`session`) and blocked on engine G0–G2 (`ratarmount-session` is not in the engine tree). `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount` with Open/Close, breadcrumbs, and a paged virtual list. Native commands (`pickFile`, `list`, …) use an in-memory catalog unless a real Session is linked.
 
 Chrome/Electron `ArrayBuffer` and wasm32 linear memory both cap around 2–4 GiB — that is the failure mode this product exists to avoid. The desktop GPUIX build is in scope **only if** React never sees archive bytes. The GPUIX browser/`bun run web` target is out of scope.
 

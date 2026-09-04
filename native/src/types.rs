@@ -25,6 +25,18 @@ pub enum IndexPolicy {
     Memory,
 }
 
+impl IndexPolicy {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Sibling => "sibling",
+            Self::UserCache => "user-cache",
+            Self::Explicit => "explicit",
+            Self::Temp => "temp",
+            Self::Memory => "memory",
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Recreate {
     Never,

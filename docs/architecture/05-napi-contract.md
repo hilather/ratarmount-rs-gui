@@ -6,6 +6,8 @@ All commands are async. Large work returns `{ jobId }` and completes via events.
 
 W1 stubs: the compiled addon is synchronous (`#[napi] fn`, not `async fn`). JS `await cmd()` still works. Long index/extract work in W2+ must return `{ jobId }` before running on a worker — do not block the GPUI/Bun thread.
 
+W2: `RGUI_FAKE=1` / test mode still use the in-memory catalog. Production `open` uses the Session adapter. Until `ratarmount-session` exists, `recreate: 'never'` throws `{ code: 'Internal', retryable: false }` with a `TODO(engine)` message; `if-invalid` / `always` return `{ jobId }` then `jobFailed` with that same shape (cancel token is set on `cancel(jobId)`). No `readAll`. No member bytes on the napi surface.
+
 There is **no** `readAll` command. Do not add one.
 
 Native **must not** return a raw SQLite `offset: u64` (or rowid) to JS as a paging API. Paging uses an **opaque** `cursor: string` that native may encode as rowid, path, or both. JS treats the cursor as a black box and must not parse it.
