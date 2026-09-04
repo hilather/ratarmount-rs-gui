@@ -11,7 +11,7 @@ use crate::session::{
     index_progress_event, session_feature_enabled, unresolved_index_display, EngineSession,
     ExtractRequest, IndexJob, IndexProgress, OpenRequest, INDEX_DEBUG_PREFIX,
 };
-use crate::state::{JobKind, NativeApp};
+use crate::state::{JobKind, JobStatus, NativeApp};
 use crate::types::{ExtractOpts, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, Recreate};
 use crate::ustar_fixture::{
     count_ustar_regular_files, member_body, member_name, write_thousand_member_tar, write_ustar,
@@ -373,6 +373,71 @@ fn cancel_sets_job_token() {
         events.last(),
         Some(Event::JobCancelled { job_id: id }) if *id == job_id
     ));
+}
+
+#[test]
+fn regression_cancel_before_index_worker_discards_pending_open_password() {
+    // Regression: cancel of a deferred cold open left the password in JobState.pending_open.
+    if !session_feature_enabled() {
+        return;
+    }
+    const SECRET: &str = "s3cret-cancel-open";
+    let tmp = TempTree::new("cancel-pw");
+    let tar = tmp.path().join("hello.tar");
+    fs::copy(crate::paths::fixture_hello_tar(), &tar).unwrap();
+    let mut app = NativeApp::production();
+    let outcome = app
+        .open_defer_index_job(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::IfInvalid,
+            password: Some(SECRET.into()),
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("deferred job");
+    let OpenOutcome::Job { job_id } = outcome else {
+        panic!("if-invalid must return jobId");
+    };
+    assert!(app.job_has_pending_open(job_id));
+    app.cancel(job_id).unwrap();
+    assert!(!app.job_has_pending_open(job_id));
+    let debug = app.job_debug(job_id).expect("job");
+    assert!(!debug.contains(SECRET));
+    assert!(app.take_open_work(job_id).is_none());
+}
+
+#[test]
+fn take_open_work_discards_password_when_job_not_running() {
+    if !session_feature_enabled() {
+        return;
+    }
+    const SECRET: &str = "s3cret-stale-open";
+    let tmp = TempTree::new("stale-pw");
+    let tar = tmp.path().join("hello.tar");
+    fs::copy(crate::paths::fixture_hello_tar(), &tar).unwrap();
+    let mut app = NativeApp::production();
+    let outcome = app
+        .open_defer_index_job(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::IfInvalid,
+            password: Some(SECRET.into()),
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("deferred job");
+    let OpenOutcome::Job { job_id } = outcome else {
+        panic!("if-invalid must return jobId");
+    };
+    app.force_job_status(job_id, JobStatus::Cancelled);
+    assert!(app.job_has_pending_open(job_id));
+    assert!(app.take_open_work(job_id).is_none());
+    assert!(!app.job_has_pending_open(job_id));
+    let debug = app.job_debug(job_id).expect("job");
+    assert!(!debug.contains(SECRET));
 }
 
 #[test]

@@ -96,6 +96,12 @@ impl JobState {
     pub fn cancel_requested(&self) -> bool {
         self.cancel.load(std::sync::atomic::Ordering::SeqCst)
     }
+
+    fn discard_pending_open_secret(&mut self) {
+        if let Some(req) = self.pending_open.take() {
+            crate::paths::discard_secret(req.password);
+        }
+    }
 }
 
 pub struct NativeApp {
@@ -336,10 +342,36 @@ impl NativeApp {
     pub fn take_open_work(&mut self, job_id: u32) -> Option<(OpenRequest, Arc<AtomicBool>)> {
         let job = self.jobs.get_mut(&job_id)?;
         if job.status != JobStatus::Running {
+            job.discard_pending_open_secret();
             return None;
         }
         let req = job.pending_open.take()?;
         Some((req, job.cancel.clone()))
+    }
+
+    pub(crate) fn discard_pending_open(&mut self, job_id: u32) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            job.discard_pending_open_secret();
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn job_has_pending_open(&self, job_id: u32) -> bool {
+        self.jobs
+            .get(&job_id)
+            .is_some_and(|job| job.pending_open.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn job_debug(&self, job_id: u32) -> Option<String> {
+        self.jobs.get(&job_id).map(|job| format!("{job:?}"))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn force_job_status(&mut self, job_id: u32, status: JobStatus) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            job.status = status;
+        }
     }
 }
 

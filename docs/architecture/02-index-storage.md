@@ -1,6 +1,6 @@
 # 02 — Index storage
 
-Indexes are SQLite 0.7.x sidecars. The GUI must not invent a second format. **Do not reimplement discovery in this repo.** Call the engine helper (`resolve_index` once G4 lands; until then whatever `ratarmount-index::resolve_index_location` / `Session::open` already does). Putting locally built remote indexes in `local-index-v1` vs `meta-v3` is an **engine** decision (G4.3 vs G4.5), not a GUI fork.
+Indexes are SQLite 0.7.x sidecars. The GUI must not invent a second format. **Do not reimplement discovery in this repo.** Engine `ratarmount-session` 0.1.30 `Session::open` / `resolve_index` own the location. The GUI must not hash `local-index-v1` keys. Putting locally built remote indexes in `local-index-v1` vs `meta-v3` is an **engine** decision, not a GUI fork.
 
 ## Do not use /tmp as the default
 
@@ -40,12 +40,12 @@ This is **not** the remote sidecar cache.
 | macOS | `~/Library/Caches/ratarmount/local-index-v1/` |
 | Windows | `%LOCALAPPDATA%\ratarmount\local-index-v1\` |
 
-Key file name (**post-G4 target**): `sha256(canonical_path + '\0' + size + '\0' + mtime_ns + '\0' + file_id).sqlite` plus a `.json` sidecar with the inputs so the UI can show “index for /data/foo.tar”.
+Key file name (engine 0.1.30 UserCache): `local-index-v1/{sha256}.sqlite`. The engine hashes the key; the GUI must not. The user-cache **badge** stays `"user cache"`, not the filename.
 
 Env override: `RATARMOUNT_LOCAL_INDEX_DIR`.  
 Size cap: `RATARMOUNT_LOCAL_INDEX_CACHE_BYTES` (default **2 GiB**). LRU by last-open time.
 
-**Legacy CLI folder (not the GUI user-cache path):** `$XDG_CACHE_HOME/ratarmount/` (the **parent** of `meta-v3/`) plus `~/.ratarmount/`. Today’s CLI writes flattened `{archive_path_with_slashes_as_underscores}.index.sqlite` names there. Do not write GUI sidecars into that parent; after G4 they belong in `local-index-v1/` with sha256 keys. W2/W5 consume G4 helpers only.
+**Legacy CLI folder (not the GUI user-cache path):** `$XDG_CACHE_HOME/ratarmount/` (the **parent** of `meta-v3/`) plus `~/.ratarmount/`. The CLI `CliCompat` order still writes flattened `{archive_path_with_slashes_as_underscores}.index.sqlite` names there. Do not write GUI sidecars into that parent; UserCache belongs in `local-index-v1/` with engine sha256 keys. The GUI never sends `CliCompat`.
 
 ### Remote sidecar cache (already in the engine)
 
@@ -66,34 +66,23 @@ Create with mode 0700. Unlink on close and on next launch (sweep stale).
 
 ## Resolution order
 
-### Today’s CLI (engine 0.1.29 — `resolve_index_location`)
+### Engine `resolve_index` (0.1.30; GUI consumes it, does not reimplement)
 
-Verified in `ratarmount-index/src/location.rs`. Last resort is **`:memory:`**, not user-cache.
-
-1. Explicit `--index-file` (`:memory:`, local path, or `http(s):` / `file://` URL)
-2. Folder candidates from `--index-folders`, default `["", $XDG_CACHE_HOME/ratarmount, ~/.ratarmount]` (empty folder = next to the archive)
-   - Sibling well-known `{archive}.index.sqlite`
-   - Non-empty folder → `folder / {archive_path with '/' replaced by '_'}.index.sqlite` (flattened; this is the **legacy** `$XDG_CACHE_HOME/ratarmount/` parent, **not** `local-index-v1/`)
-3. Sibling pointer candidates `{archive}.index.ptr` → `{archive}.index.{id}.sqlite` (existing G-2 path; applied by callers on local miss)
-4. Remote `meta-v3` for URL sources (already exists; do not fork)
-5. First writable candidate for **create**
-6. **Last resort: `:memory:`** (matches Python when nothing is writable)
-
-`local-index-v1/` does **not** exist yet. If W2 writes sha256 keys there before G4, the CLI will not find them.
-
-Production `open` does **not** preflight `resolve_index` as a gate. `Session::open` resolves the sidecar. After a successful Sibling / UserCache / Explicit open, native may call `resolve_index(..., extra_dirs, recreate=false)` for the debug/status line only; Temp / Memory never call the helper. Native does not invent sidecar names or `local-index-v1` sha256 keys.
-
-### Post-G4 target (engine `resolve_index`; GUI consumes it, does not reimplement)
+`Session::open` calls this internally. The GUI must not copy the table.
 
 1. `explicit` path if policy is explicit
 2. Sibling `.index.ptr` → `.index.{id}.sqlite`
 3. Sibling `.index.sqlite`
 4. Extra folders from `index.extra_dirs` (maps to CLI `--index-folders`)
-5. `user-cache` `local-index-v1`
+5. `user-cache` `local-index-v1/{sha256}.sqlite`
 6. Remote `meta-v3` (URL sources)
 7. Build new at the location implied by policy (not `:memory:` unless policy is `memory`)
 
-If policy is `sibling` and the directory is not writable → structured error `SiblingNotWritable`. GUI offers “Save index in user cache instead” and remembers per-volume if the user checks “always for this filesystem.” That error is a G4.2 deliverable.
+If policy is `sibling` and the directory is not writable on create (`if-invalid` / `always`) → structured error `SiblingNotWritable`. `never` + missing sidecar is `NotFound` even if the parent is unwritable. GUI offers “Save index in user cache instead” and remembers per-volume if the user checks “always for this filesystem.”
+
+CLI `IndexPolicy::CliCompat` still uses the older `resolve_index_location` order (legacy flattened `$XDG_CACHE_HOME/ratarmount/` parent, `:memory:` last resort). The GUI never sends `CliCompat`.
+
+Production `open` does **not** preflight `resolve_index` as a gate. After a successful Sibling / UserCache / Explicit open, native may call `resolve_index(..., extra_dirs, recreate=false)` for the debug/status line only; Temp / Memory never call the helper. Native does not invent sidecar names or `local-index-v1` sha256 keys.
 
 ## What is stored next to the archive (sibling)
 

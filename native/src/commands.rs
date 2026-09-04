@@ -415,13 +415,21 @@ impl NativeApp {
     }
 
     pub fn cancel(&mut self, job_id: u32) -> Result<()> {
-        let job = self
-            .jobs
-            .get_mut(&job_id)
-            .ok_or_else(|| ApiError::not_found(format!("job {job_id} not found")))?;
-        job.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
-        if job.status == JobStatus::Running {
-            job.status = JobStatus::Cancelled;
+        let running = {
+            let job = self
+                .jobs
+                .get_mut(&job_id)
+                .ok_or_else(|| ApiError::not_found(format!("job {job_id} not found")))?;
+            job.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+            if job.status == JobStatus::Running {
+                job.status = JobStatus::Cancelled;
+                true
+            } else {
+                false
+            }
+        };
+        self.discard_pending_open(job_id);
+        if running {
             self.emit(Event::JobCancelled { job_id });
         }
         Ok(())
@@ -540,12 +548,31 @@ impl NativeApp {
             recursion_depth: None,
         })? {
             OpenOutcome::Session { session_id } => Ok(session_id),
-            OpenOutcome::Job { job_id } => self
-                .jobs
-                .get(&job_id)
-                .and_then(|job| job.session_id)
-                .ok_or_else(|| ApiError::internal("index-only job produced no session")),
+            OpenOutcome::Job { job_id } => {
+                if let Some(session_id) = self.jobs.get(&job_id).and_then(|job| job.session_id) {
+                    Ok(session_id)
+                } else {
+                    Err(self.job_terminal_error(job_id).unwrap_or_else(|| {
+                        ApiError::internal("index-only job produced no session")
+                    }))
+                }
+            }
         }
+    }
+
+    fn job_terminal_error(&self, job_id: u32) -> Option<ApiError> {
+        self.events.iter().rev().find_map(|event| match event {
+            Event::JobFailed {
+                job_id: id,
+                code,
+                message,
+                ..
+            } if *id == job_id => Some(ApiError::new(ErrorCode::from_wire(code), message.clone())),
+            Event::JobCancelled { job_id: id } if *id == job_id => {
+                Some(ApiError::new(ErrorCode::Cancelled, "cancelled"))
+            }
+            _ => None,
+        })
     }
 
     pub fn probe_features(&self) -> crate::types::FeatureProbe {
