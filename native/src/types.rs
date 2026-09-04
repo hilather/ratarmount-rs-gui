@@ -13,6 +13,15 @@ const _: () = {
 };
 pub const FAKE_ROOT_DIR_COUNT: usize = 10;
 pub const FAKE_ROOT_FILE_COUNT: usize = 650;
+pub const RECENT_MAX: usize = 10;
+#[cfg(test)]
+pub const HUNDRED_K: usize = 100_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FeatureProbe {
+    pub fuse: bool,
+    pub http: bool,
+}
 
 pub const STUB_CONFLICTS_DEST: &str = "__rgui_stub_conflicts__";
 pub const STUB_BUSY_DEST: &str = "__rgui_fail_busy__";

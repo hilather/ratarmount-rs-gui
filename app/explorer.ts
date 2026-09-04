@@ -6,12 +6,20 @@ import {
   type DirEnt,
   type ExtractConflict,
   type ExtractPlan,
+  type FeatureProbe,
   type NativeAddon,
   type NativeOverwrite,
   type OpenResult,
+  type PersistablePolicy,
   type PreviewResult,
   type SessionId,
 } from './napi'
+import {
+  effectiveOpenPolicy,
+  hideMemoryPolicy,
+  indexLocationHint,
+  volumeKeyForSource,
+} from './settings'
 
 export const LIST_LIMIT_DEFAULT = 200
 export const LIST_LIMIT_MAX = 500
@@ -54,6 +62,7 @@ export type ExplorerDialog =
   | { kind: 'password' }
   | { kind: 'path-escape'; message: string }
   | { kind: 'settings' }
+  | { kind: 'sibling-not-writable'; source: string; remember: boolean }
 
 export type Crumb = {
   testId: string
@@ -81,6 +90,12 @@ export type ExplorerSnapshot = {
   extractJob: ExtractJobView | null
   dialog: ExplorerDialog
   allowUnsafePaths: boolean
+  searchQuery: string
+  recentPaths: string[]
+  features: FeatureProbe
+  fuseMountpoint: string | null
+  httpUrl: string | null
+  httpCopied: boolean
 }
 
 const IDLE: ExplorerSnapshot = {
@@ -103,6 +118,12 @@ const IDLE: ExplorerSnapshot = {
   extractJob: null,
   dialog: { kind: 'none' },
   allowUnsafePaths: false,
+  searchQuery: '',
+  recentPaths: [],
+  features: { fuse: false, http: false },
+  fuseMountpoint: null,
+  httpUrl: null,
+  httpCopied: false,
 }
 
 export function crumbTestId(path: string): string {
@@ -236,6 +257,8 @@ export class ExplorerController {
   private openAfterExtract: { jobId: number | null; destDir: string; member: string } | null =
     null
   private systemOpens: string[] = []
+  private copiedText: string | null = null
+  private policyOverride: PersistablePolicy | null = null
 
   constructor(options: ExplorerOptions = {}) {
     const limit = options.listLimit ?? LIST_LIMIT_DEFAULT
@@ -254,6 +277,10 @@ export class ExplorerController {
 
   openedWithSystem(): readonly string[] {
     return this.systemOpens
+  }
+
+  lastCopied(): string | null {
+    return this.copiedText
   }
 
   setNativeLoader(loader: () => Promise<NativeAddon>): void {
@@ -286,7 +313,20 @@ export class ExplorerController {
       if (this.disposed) {
         return
       }
-      this.patch({ allowUnsafePaths: cfg.extract.allowUnsafePaths === true })
+      let features: FeatureProbe = { fuse: false, http: false }
+      try {
+        features = await native.probeFeatures()
+      } catch {
+        features = { fuse: false, http: false }
+      }
+      if (this.disposed) {
+        return
+      }
+      this.patch({
+        allowUnsafePaths: cfg.extract.allowUnsafePaths === true,
+        recentPaths: [...(cfg.recent?.paths ?? [])],
+        features,
+      })
     } catch {
       // Keep the default-off unsafe-path toggle.
     }
@@ -440,6 +480,24 @@ export class ExplorerController {
       return
     }
     const gen = ++this.gen
+    let policy: PersistablePolicy = 'sibling'
+    let recreate: 'never' | 'if-invalid' | 'always' = 'if-invalid'
+    let explicitPath: string | undefined
+    try {
+      const cfg = await native.getConfig()
+      policy =
+        this.policyOverride ??
+        effectiveOpenPolicy(
+          hideMemoryPolicy(cfg.index.policy),
+          source,
+          cfg.index.rememberedVolumes,
+          cfg.index.rememberUnwritableVolumes,
+        )
+      recreate = cfg.index.recreate
+      explicitPath = cfg.index.explicitPath || undefined
+    } catch {
+      policy = this.policyOverride ?? 'sibling'
+    }
     this.patch({
       status: 'opening',
       listing: true,
@@ -455,7 +513,11 @@ export class ExplorerController {
       previewPath: null,
       path: '/',
       archivePath: source,
-      indexPath: siblingIndexPath(source),
+      indexPath: indexLocationHint(policy, source, explicitPath),
+      searchQuery: '',
+      fuseMountpoint: null,
+      httpUrl: null,
+      httpCopied: false,
       dialog: { kind: 'none' },
     })
     try {
@@ -465,8 +527,9 @@ export class ExplorerController {
       }
       const outcome = await native.open({
         source,
-        policy: 'sibling',
-        recreate: 'if-invalid',
+        policy,
+        recreate,
+        ...(explicitPath ? { explicitPath } : {}),
         ...(password === undefined ? {} : { password }),
       })
       const sessionId = await this.sessionFromOpen(outcome)
@@ -474,6 +537,13 @@ export class ExplorerController {
         return
       }
       this.sessionId = sessionId
+      this.policyOverride = null
+      try {
+        const cfg = await native.getConfig()
+        this.patch({ recentPaths: [...(cfg.recent?.paths ?? [])] })
+      } catch {
+        // Recent list is optional chrome.
+      }
       await this.fetchPage({ path: '/', cursor: null, append: false, gen })
     } catch (err) {
       if (this.disposed || gen !== this.gen) {
@@ -489,6 +559,17 @@ export class ExplorerController {
           error: ce.message,
           errorRetryable: false,
           dialog: { kind: 'password' },
+        })
+        return
+      }
+      if (ce.code === 'SiblingNotWritable') {
+        this.patch({
+          status: 'error',
+          listing: false,
+          loadingMore: false,
+          error: ce.message,
+          errorRetryable: true,
+          dialog: { kind: 'sibling-not-writable', source, remember: true },
         })
         return
       }
@@ -528,6 +609,8 @@ export class ExplorerController {
       ...IDLE,
       nativeReady: this.native != null,
       allowUnsafePaths: this.snapshot.allowUnsafePaths,
+      recentPaths: this.snapshot.recentPaths,
+      features: this.snapshot.features,
     })
   }
 
@@ -535,7 +618,11 @@ export class ExplorerController {
     if (this.sessionId == null) {
       return
     }
-    if (path === this.snapshot.path && this.snapshot.status === 'ready') {
+    if (
+      path === this.snapshot.path &&
+      this.snapshot.status === 'ready' &&
+      this.snapshot.searchQuery === ''
+    ) {
       return
     }
     const gen = ++this.gen
@@ -549,6 +636,7 @@ export class ExplorerController {
       selectedPaths: [],
       preview: null,
       previewPath: null,
+      searchQuery: '',
       error: null,
     })
     try {
@@ -580,12 +668,21 @@ export class ExplorerController {
     const gen = this.gen
     this.patch({ loadingMore: true })
     try {
-      await this.fetchPage({
-        path: this.snapshot.path,
-        cursor,
-        append: true,
-        gen,
-      })
+      if (this.snapshot.searchQuery !== '') {
+        await this.fetchFind({
+          query: this.snapshot.searchQuery,
+          cursor,
+          append: true,
+          gen,
+        })
+      } else {
+        await this.fetchPage({
+          path: this.snapshot.path,
+          cursor,
+          append: true,
+          gen,
+        })
+      }
     } catch (err) {
       if (this.disposed || gen !== this.gen) {
         return
@@ -775,6 +872,185 @@ export class ExplorerController {
       this.selectAnchor = 0
       this.queuePreview()
     }
+  }
+
+  async setSearch(query: string): Promise<void> {
+    if (this.sessionId == null) {
+      return
+    }
+    const gen = ++this.gen
+    const trimmed = query
+    this.patch({
+      searchQuery: trimmed,
+      listing: true,
+      loadingMore: false,
+      entries: [],
+      nextCursor: null,
+      selectedIndex: 0,
+      selectedPaths: [],
+      preview: null,
+      previewPath: null,
+      error: null,
+    })
+    try {
+      if (trimmed === '') {
+        await this.fetchPage({ path: this.snapshot.path, cursor: null, append: false, gen })
+        return
+      }
+      await this.fetchFind({ query: trimmed, cursor: null, append: false, gen })
+    } catch (err) {
+      if (this.disposed || gen !== this.gen) {
+        return
+      }
+      this.setError(err)
+    }
+  }
+
+  private async fetchFind(opts: {
+    query: string
+    cursor: Cursor | null
+    append: boolean
+    gen: number
+  }): Promise<void> {
+    const native = this.native
+    const sessionId = this.sessionId
+    if (!native || sessionId == null) {
+      throw new CommandError('Internal', 'no open session', false)
+    }
+    const page = await native.find({
+      sessionId,
+      pattern: opts.query,
+      mode: 'fts',
+      ...(opts.cursor === null ? {} : { cursor: opts.cursor }),
+      limit: this.listLimit,
+    })
+    if (this.disposed || opts.gen !== this.gen) {
+      return
+    }
+    const entries = opts.append ? [...this.snapshot.entries, ...page.entries] : page.entries
+    const selectedIndex = opts.append
+      ? Math.min(this.snapshot.selectedIndex, Math.max(0, entries.length - 1))
+      : 0
+    const selectedPaths = opts.append
+      ? this.snapshot.selectedPaths
+      : entries[selectedIndex]?.path
+        ? [entries[selectedIndex].path]
+        : []
+    this.patch({
+      status: 'ready',
+      listing: false,
+      loadingMore: false,
+      error: null,
+      errorRetryable: false,
+      entries,
+      nextCursor: page.nextCursor,
+      totalHint: page.totalHint,
+      selectedIndex,
+      selectedPaths,
+    })
+    if (!opts.append) {
+      this.selectAnchor = 0
+      this.queuePreview()
+    }
+  }
+
+  async openDropped(path: string): Promise<void> {
+    if (!path) {
+      return
+    }
+    await this.openSource(path)
+  }
+
+  async openRecent(path: string): Promise<void> {
+    await this.openSource(path)
+  }
+
+  async confirmSiblingCache(): Promise<void> {
+    const dialog = this.snapshot.dialog
+    if (dialog.kind !== 'sibling-not-writable') {
+      return
+    }
+    const native = this.native
+    if (!native) {
+      return
+    }
+    this.policyOverride = 'user-cache'
+    if (dialog.remember) {
+      try {
+        const cfg = await native.getConfig()
+        const key = volumeKeyForSource(dialog.source)
+        const remembered = cfg.index.rememberedVolumes.includes(key)
+          ? cfg.index.rememberedVolumes
+          : [...cfg.index.rememberedVolumes, key]
+        await native.setConfig({ index: { rememberedVolumes: remembered } })
+      } catch {
+        // Opening with user-cache still proceeds.
+      }
+    }
+    this.patch({ dialog: { kind: 'none' } })
+    await this.openSource(dialog.source)
+  }
+
+  toggleSiblingRemember(): void {
+    const dialog = this.snapshot.dialog
+    if (dialog.kind !== 'sibling-not-writable') {
+      return
+    }
+    this.patch({
+      dialog: { ...dialog, remember: !dialog.remember },
+    })
+  }
+
+  async toggleFuse(): Promise<void> {
+    const native = this.native
+    const sessionId = this.sessionId
+    if (!native || sessionId == null || !this.snapshot.features.fuse) {
+      return
+    }
+    try {
+      if (this.snapshot.fuseMountpoint) {
+        await native.fuseUnmount(sessionId)
+        this.patch({ fuseMountpoint: null })
+        return
+      }
+      const result = await native.fuseMount(sessionId)
+      if ('error' in result) {
+        this.patch({ error: result.error, errorRetryable: false })
+        return
+      }
+      this.patch({ fuseMountpoint: result.mountpoint })
+    } catch (err) {
+      this.setError(err)
+    }
+  }
+
+  async toggleHttp(): Promise<void> {
+    const native = this.native
+    const sessionId = this.sessionId
+    if (!native || sessionId == null || !this.snapshot.features.http) {
+      return
+    }
+    try {
+      if (this.snapshot.httpUrl) {
+        await native.httpStop(sessionId)
+        this.patch({ httpUrl: null, httpCopied: false })
+        return
+      }
+      const result = await native.httpStart(sessionId)
+      this.patch({ httpUrl: result.url, httpCopied: false })
+    } catch (err) {
+      this.setError(err)
+    }
+  }
+
+  copyHttpUrl(): void {
+    const url = this.snapshot.httpUrl
+    if (!url) {
+      return
+    }
+    this.copiedText = url
+    this.patch({ httpCopied: true })
+    spawnClipboardWrite(url)
   }
 
   async extractTo(): Promise<void> {
@@ -1378,4 +1654,70 @@ function spawnOpenWithSystem(path: string): void {
   } catch {
     // Extract already succeeded.
   }
+}
+
+function inBunTest(): boolean {
+  return process.argv.some((arg) => arg === 'test' || arg.endsWith('.test.ts'))
+}
+
+function spawnClipboardWrite(text: string): void {
+  if (inBunTest()) {
+    return
+  }
+  if (process.platform === 'darwin') {
+    void tryClipboard(['pbcopy'], text)
+    return
+  }
+  if (process.platform === 'win32') {
+    void tryClipboard(['clip'], text)
+    return
+  }
+  void tryClipboard(['wl-copy'], text).then((ok) => {
+    if (!ok) {
+      void tryClipboard(['xclip', '-selection', 'clipboard'], text)
+    }
+  })
+}
+
+async function tryClipboard(cmd: string[], text: string): Promise<boolean> {
+  try {
+    const proc = Bun.spawn(cmd, { stdin: 'pipe', stdout: 'ignore', stderr: 'ignore' })
+    const stdin = proc.stdin
+    if (stdin && typeof stdin !== 'number') {
+      stdin.write(text)
+      stdin.end()
+    }
+    return (await proc.exited) === 0
+  } catch {
+    return false
+  }
+}
+
+/** Wire OS / napi file-drop (GPUIX 0.6 has no React onDrop). */
+export function bindNativeFileDrop(native: NativeAddon, controller: ExplorerController): void {
+  native.on('fileDrop', (event) => {
+    const path = event.paths[0]
+    if (path) {
+      void controller.openDropped(path)
+    }
+  })
+  void native.startFileDropWatch()
+}
+
+export function gpuixFileDropPath(event: {
+  eventType?: string
+  value?: string
+  paths?: unknown
+}): string | null {
+  const type = event.eventType
+  if (type !== 'drop' && type !== 'fileDrop' && type !== 'filesDropped') {
+    return null
+  }
+  if (Array.isArray(event.paths) && typeof event.paths[0] === 'string') {
+    return event.paths[0]
+  }
+  if (typeof event.value === 'string' && event.value.length > 0) {
+    return event.value
+  }
+  return null
 }

@@ -126,6 +126,21 @@ test('volumeKeyForSource matches native Path parent (root + Windows separators)'
   )
 })
 
+test('settings registers associations and toggles unsafe paths', async () => {
+  const { controller, fake } = await loadSettings()
+  const tree = SettingsView({
+    model: controller.getSnapshot(),
+    ...settingsHandlers(controller, () => {}),
+  })
+  expect(getByTestId(tree, 'settings-register')).toBeTruthy()
+  clickByTestId(tree, 'settings-register')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(fake.registerCalls).toBe(1)
+  clickByTestId(tree, 'settings-unsafe-paths')
+  await new Promise((resolve) => setTimeout(resolve, 0))
+  expect(fake.config.extract.allowUnsafePaths).toBe(true)
+})
+
 test('settings chips fire policy changes', async () => {
   const { controller, fake } = await loadSettings()
   const tree = SettingsView({

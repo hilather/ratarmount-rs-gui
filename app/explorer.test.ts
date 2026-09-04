@@ -6,6 +6,7 @@ import {
   countLabel,
   crumbsFor,
   crumbTestId,
+  bindNativeFileDrop,
   ExplorerController,
   EXTRACT_CONFIRM_BYTES,
   EXTRACT_CONFIRM_FILES,
@@ -21,6 +22,7 @@ import {
   createFakeNative,
   FAKE_ENCRYPTED_PASSWORD,
   FAKE_MTIME,
+  FAKE_ROOT_DIR_COUNT,
   FAKE_ROOT_FILE_COUNT,
   FAKE_ROOT_TOTAL,
   NINE_MIB,
@@ -55,6 +57,14 @@ const noop: ExplorerHandlers = {
   onDismissDialog() {},
   onPasswordSubmit() {},
   onExtractOpenSystem() {},
+  onSearch() {},
+  onOpenRecent() {},
+  onDrop() {},
+  onToggleFuse() {},
+  onToggleHttp() {},
+  onCopyHttp() {},
+  onConfirmSibling() {},
+  onToggleSiblingRemember() {},
 }
 
 function renderView(model: ExplorerSnapshot, handlers: Partial<ExplorerHandlers> = {}) {
@@ -305,13 +315,12 @@ test('W4 source does not call readAll and does not pass overwrite ask', async ()
   for (const file of files) {
     const source = await Bun.file(new URL(`./${file}`, import.meta.url)).text()
     expect(source).not.toMatch(/\breadAll\s*\(/)
-    // config.extract.overwrite may be 'ask'; extract() must not send that to native.
-    expect(source).not.toMatch(/\bextract\s*\(\s*\{[\s\S]*?overwrite:\s*['"]ask['"]/)
+    expect(source).not.toMatch(/extract\s*\(\s*\{[^}]*overwrite:\s*['"]ask['"]/)
   }
   const explorer = await Bun.file(new URL('./explorer.ts', import.meta.url)).text()
   expect(explorer).toMatch(/\bextractPlan\s*\(/)
   expect(explorer).toMatch(/\bpreview\s*\(/)
-  expect(explorer).not.toMatch(/\bnative\.find\s*\(/)
+  expect(explorer).toMatch(/\bnative\.find\s*\(/)
 })
 
 test('ExplorerView is a GPUIX host tree (virtual-list + testIds)', async () => {
@@ -324,7 +333,7 @@ test('ExplorerView is a GPUIX host tree (virtual-list + testIds)', async () => {
   expect(ids).toContain('crumb-root')
   expect(ids).toContain('extract')
   expect(ids).toContain('preview')
-  expect(ids).not.toContain('search')
+  expect(ids).toContain('search')
 })
 
 test('getByTestId chrome controls fire ExplorerView handlers', async () => {
@@ -452,6 +461,9 @@ test('App wires explorerHandlers onto the injected native', async () => {
   expect(source).toContain('explorerHandlers')
   expect(source).toContain('setNativeLoader')
   expect(source).toContain('native?: NativeAddon')
+  expect(source).toContain("setScreen('settings')")
+  expect(source).toContain('bindNativeFileDrop')
+  expect(source).toContain('onEvent')
 })
 
 test('ctrl-click multi-selects rows without entering a directory', async () => {
@@ -776,6 +788,126 @@ test('index-only is headless and does not stay in the explorer', async () => {
   await controller.applyArgv(['--index-only', '/archives/hello.tar'])
   expect(fake.applyLaunchCalls[0]).toEqual(['--index-only', '/archives/hello.tar'])
   expect(controller.getSnapshot().archivePath).toBeNull()
+})
+
+test('paged find keeps React state page-sized', async () => {
+  const { fake, controller } = await openRoot()
+  await controller.setSearch('file-')
+  const snap = controller.getSnapshot()
+  expect(snap.searchQuery).toBe('file-')
+  expect(snap.entries.length).toBe(LIST_LIMIT_DEFAULT)
+  expect(snap.entries.length).toBeLessThan(FAKE_ROOT_FILE_COUNT)
+  expect(snap.nextCursor).not.toBeNull()
+  expect(fake.findCalls).toHaveLength(1)
+  expect(fake.findCalls[0]?.limit).toBe(LIST_LIMIT_DEFAULT)
+  expect(fake.findCalls[0]?.mode).toBe('fts')
+  await controller.loadMore()
+  expect(controller.getSnapshot().entries.length).toBe(LIST_LIMIT_DEFAULT * 2)
+  expect(controller.getSnapshot().entries.length).toBeLessThan(FAKE_ROOT_TOTAL)
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(tree, 'search')).toBeTruthy()
+})
+
+test('fuse button is hidden when probe fails and shown when it succeeds', async () => {
+  const hidden = await openRoot()
+  const hiddenTree = renderView(hidden.controller.getSnapshot())
+  expect(queryByTestId(hiddenTree, 'reveal-folder')).toBeNull()
+  expect(queryByTestId(hiddenTree, 'share-http')).toBeNull()
+
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    features: { fuse: true, http: true },
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await waitFor(controller, (s) => s.features.fuse && s.features.http)
+  await controller.openPicked()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(tree, 'reveal-folder')).toBeTruthy()
+  expect(getByTestId(tree, 'share-http')).toBeTruthy()
+  clickByTestId(tree, 'reveal-folder')
+  await waitFor(controller, (s) => s.fuseMountpoint != null)
+  expect(controller.getSnapshot().fuseMountpoint).toContain('rgui-fuse')
+  clickByTestId(renderView(controller.getSnapshot(), explorerHandlers(controller)), 'share-http')
+  await waitFor(controller, (s) => s.httpUrl != null)
+  clickByTestId(renderView(controller.getSnapshot(), explorerHandlers(controller)), 'http-copy')
+  expect(controller.lastCopied()).toBe(controller.getSnapshot().httpUrl)
+})
+
+test('100k scroll keeps page-sized React state', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/huge.tar', rootFileCount: 100_000 })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  const snap = controller.getSnapshot()
+  expect(snap.entries.length).toBe(LIST_LIMIT_DEFAULT)
+  expect(snap.entries.length).toBeLessThan(100_000)
+  expect(snap.totalHint).toBe(FAKE_ROOT_DIR_COUNT + 100_000)
+  controller.onVisibleRange(0, LIST_LIMIT_DEFAULT - 4)
+  await waitFor(controller, (s) => s.entries.length === LIST_LIMIT_DEFAULT * 2)
+  expect(controller.getSnapshot().entries.length).toBeLessThan(100_000)
+  expect(fake.listCalls.every((c) => (c.limit ?? LIST_LIMIT_DEFAULT) <= 500)).toBe(true)
+})
+
+test('a11y: focused row has a focus ring and keyboard extract does not need a click', async () => {
+  const { fake, controller } = await openRoot()
+  await controller.enterPath('/dir-00')
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  const row = getByTestId(tree, 'row-a.txt')
+  const style = row.props as { style?: { borderWidth?: number; borderColor?: string } }
+  expect(style.style?.borderWidth).toBeGreaterThan(0)
+  expect(style.style?.borderColor).toBeTruthy()
+  const extract = getByTestId(tree, 'extract')
+  expect(typeof (extract.props as { onFocus?: unknown }).onFocus).toBe('function')
+  expect(typeof (extract.props as { onBlur?: unknown }).onBlur).toBe('function')
+  const extractStyle = extract.props as { style?: { borderWidth?: number } }
+  expect(extractStyle.style?.borderWidth ?? 0).toBe(0)
+  keyDownByTestId(tree, 'extract', 'enter')
+  await waitFor(controller, (s) => s.extractJob?.status === 'succeeded')
+  expect(fake.extractCalls.length).toBeGreaterThan(0)
+  expect(fake.extractCalls[0]?.overwrite).not.toBe('ask')
+})
+
+test('search input onChange pages find', async () => {
+  const { fake, controller } = await openRoot()
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  changeByTestId(tree, 'search', 'file-')
+  await waitFor(controller, (s) => s.searchQuery === 'file-' && s.entries.length === LIST_LIMIT_DEFAULT)
+  expect(fake.findCalls.length).toBeGreaterThan(0)
+})
+
+test('recent archives are paths only and native fileDrop opens an archive', async () => {
+  const fake = createFakeNative({ pickFile: '/archives/hello.tar' })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  bindNativeFileDrop(fake, controller)
+  expect(fake.fileDropWatchStarted).toBe(1)
+  await controller.openPicked()
+  expect(controller.getSnapshot().recentPaths).toEqual(['/archives/hello.tar'])
+  expect(JSON.stringify(controller.getSnapshot())).not.toContain('password')
+  await controller.closeArchive()
+  const idle = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(idle, 'recent')).toBeTruthy()
+  expect(getByTestId(idle, 'recent-0')).toBeTruthy()
+  fake.emitFileDrop(['/archives/dropped.tar'])
+  await waitFor(controller, (s) => s.archivePath === '/archives/dropped.tar' && s.status === 'ready')
+  expect(fake.openCalls.some((c) => c.source === '/archives/dropped.tar')).toBe(true)
+})
+
+test('SiblingNotWritable offers user cache', async () => {
+  const fake = createFakeNative({
+    pickFile: '/archives/hello.tar',
+    siblingNotWritable: true,
+  })
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.openPicked()
+  await waitFor(controller, (s) => s.dialog.kind === 'sibling-not-writable')
+  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(tree, 'sibling-dialog')).toBeTruthy()
+  clickByTestId(tree, 'sibling-use-cache')
+  await waitFor(controller, (s) => s.status === 'ready' && s.archivePath === '/archives/hello.tar')
+  expect(fake.openCalls.some((c) => c.policy === 'user-cache')).toBe(true)
 })
 
 

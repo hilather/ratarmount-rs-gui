@@ -2,13 +2,15 @@ import { render } from '@gpuix/react'
 import { useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
 import { isHeadlessLaunch, launchArgsFromProcess, parseLaunchArgv } from './argv'
-import { ExplorerController } from './explorer'
+import { bindNativeFileDrop, ExplorerController, gpuixFileDropPath } from './explorer'
 import { ExplorerView, explorerHandlers } from './explorer-view'
 import { loadNativeAddon } from './native-addon'
 import type { NativeAddon } from './napi'
 import { SettingsController } from './settings'
 import { SettingsView, settingsHandlers } from './settings-view'
 import { WINDOW_HEIGHT, WINDOW_TITLE, WINDOW_WIDTH } from './window'
+
+const dropSink: { open: ((path: string) => void) | null } = { open: null }
 
 export function App({
   native,
@@ -30,23 +32,33 @@ export function App({
     settings.getSnapshot,
     settings.getSnapshot,
   )
-  const handlers = useMemo(
-    () => explorerHandlers(controller),
-    [controller],
-  )
+  const handlers = useMemo(() => {
+    const base = explorerHandlers(controller)
+    return {
+      ...base,
+      onSettings: () => setScreen('settings'),
+    }
+  }, [controller])
   const settingHandlers = useMemo(
     () => settingsHandlers(settings, () => setScreen('explorer')),
     [settings],
   )
 
   useEffect(() => {
+    dropSink.open = (path) => {
+      void controller.openDropped(path)
+    }
     if (native) {
       controller.setNative(native)
+      bindNativeFileDrop(native, controller)
       if (initialArgv && initialArgv.length > 0) {
         void controller.applyArgv(initialArgv)
       }
       settings.setNative(native)
-      return () => controller.dispose()
+      return () => {
+        dropSink.open = null
+        controller.dispose()
+      }
     }
     controller.setNativeLoader(loadNativeAddon)
     let cancelled = false
@@ -56,6 +68,7 @@ export function App({
           return
         }
         controller.setNative(addon)
+        bindNativeFileDrop(addon, controller)
         settings.setNative(addon)
         const args =
           initialArgv ??
@@ -72,6 +85,7 @@ export function App({
       })
     return () => {
       cancelled = true
+      dropSink.open = null
       controller.dispose()
     }
   }, [controller, native, initialArgv, settings])
@@ -113,6 +127,12 @@ if (import.meta.main || Bun.isStandaloneExecutable) {
       height: WINDOW_HEIGHT,
       // GPUIX_BACKGROUND=1 opens the window unfocused.
       focus: typeof process === 'undefined' || process.env.GPUIX_BACKGROUND !== '1',
+      onEvent: (event) => {
+        const path = gpuixFileDropPath(event)
+        if (path) {
+          dropSink.open?.(path)
+        }
+      },
     })
   }
 }

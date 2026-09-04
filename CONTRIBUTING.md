@@ -34,6 +34,7 @@ cargo clippy -p native --all-targets -- -D warnings
 cargo clippy -p native --lib --features napi-addon -- -D warnings
 cargo test -p native
 (cd app && bun run typecheck && bun test)
+bash packaging/run-tests.sh
 ```
 
 ## Review

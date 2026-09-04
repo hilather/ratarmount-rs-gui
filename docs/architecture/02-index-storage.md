@@ -130,6 +130,9 @@ allow_unsafe_paths = false
 [engine]
 bundle_cli = true
 cli_path = ""                      # empty = bundled then PATH
+
+[recent]
+paths = []                         # W8; archive paths only, never passwords
 ```
 
 Native loads this file on startup (`getConfig` / `setConfig` persist it). `policy = "memory"` is coerced to `sibling` and never written back. `preview.max_bytes` is clamped to **64 MiB** on load and save. Passwords are ignored if present and never written.

@@ -129,6 +129,7 @@ export type SettingsSnapshot = {
   localCacheBytes: number
   explicitPath: string
   rememberUnwritableVolumes: boolean
+  allowUnsafePaths: boolean
   cacheRemoved: number | null
   saving: boolean
 }
@@ -143,6 +144,7 @@ const DEFAULT_SNAP: SettingsSnapshot = {
   localCacheBytes: 2 * 1024 * 1024 * 1024,
   explicitPath: '',
   rememberUnwritableVolumes: true,
+  allowUnsafePaths: false,
   cacheRemoved: null,
   saving: false,
 }
@@ -242,6 +244,38 @@ export class SettingsController {
     await this.patchIndex({ rememberUnwritableVolumes: value })
   }
 
+  async setAllowUnsafePaths(value: boolean): Promise<void> {
+    await this.patchConfig({ extract: { allowUnsafePaths: value } })
+  }
+
+  async toggleUnsafePaths(): Promise<void> {
+    await this.setAllowUnsafePaths(!this.snapshot.allowUnsafePaths)
+  }
+
+  async registerAssociations(): Promise<void> {
+    const native = this.requireNative()
+    if (!native) {
+      return
+    }
+    try {
+      await native.registerAssociations()
+    } catch (err) {
+      this.setError(err)
+    }
+  }
+
+  async unregisterAssociations(): Promise<void> {
+    const native = this.requireNative()
+    if (!native) {
+      return
+    }
+    try {
+      await native.unregisterAssociations()
+    } catch (err) {
+      this.setError(err)
+    }
+  }
+
   async clearLocalIndexCache(): Promise<void> {
     const native = this.requireNative()
     if (!native?.clearLocalIndexCache) {
@@ -287,6 +321,7 @@ export class SettingsController {
       localCacheBytes: cfg.index.localCacheBytes,
       explicitPath: cfg.index.explicitPath,
       rememberUnwritableVolumes: cfg.index.rememberUnwritableVolumes,
+      allowUnsafePaths: cfg.extract.allowUnsafePaths === true,
       error: null,
     })
   }

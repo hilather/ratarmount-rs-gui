@@ -15,8 +15,8 @@ use crate::parse::{
 use crate::state::NativeApp;
 use crate::types::{
     Config, ConfigPatch, DirEnt, DirPage, EngineConfigPatch, ExtractConfigPatch, ExtractConflict,
-    ExtractOpts, ExtractPlan, ExtractPlanOpts, FindOpts, FindPage, IndexConfigPatch, ListOpts,
-    OpenOpts, OpenOutcome, PreviewConfigPatch, PreviewKind, RecentConfigPatch,
+    ExtractOpts, ExtractPlan, ExtractPlanOpts, FeatureProbe, FindOpts, FindPage, IndexConfigPatch,
+    ListOpts, OpenOpts, OpenOutcome, PreviewConfigPatch, PreviewKind, RecentConfigPatch,
 };
 
 type EventCb<T> = ThreadsafeFunction<T, (), T, Status, false>;
@@ -32,6 +32,7 @@ struct JsListeners {
     job_succeeded: Vec<EventCb<JobSucceededEvent>>,
     job_failed: Vec<EventCb<JobFailedEvent>>,
     job_cancelled: Vec<EventCb<JobCancelledEvent>>,
+    file_drop: Vec<EventCb<FileDropEvent>>,
 }
 
 impl JsListeners {
@@ -42,6 +43,7 @@ impl JsListeners {
             job_succeeded: Vec::new(),
             job_failed: Vec::new(),
             job_cancelled: Vec::new(),
+            file_drop: Vec::new(),
         }
     }
 }
@@ -508,6 +510,21 @@ pub struct JsHttpStartResult {
 }
 
 #[napi(object)]
+pub struct JsFeatureProbe {
+    pub fuse: bool,
+    pub http: bool,
+}
+
+impl From<FeatureProbe> for JsFeatureProbe {
+    fn from(probe: FeatureProbe) -> Self {
+        Self {
+            fuse: probe.fuse,
+            http: probe.http,
+        }
+    }
+}
+
+#[napi(object)]
 #[derive(Clone)]
 pub struct IndexProgressEvent {
     pub job_id: u32,
@@ -547,6 +564,12 @@ pub struct JobFailedEvent {
 #[derive(Clone)]
 pub struct JobCancelledEvent {
     pub job_id: u32,
+}
+
+#[napi(object)]
+#[derive(Clone)]
+pub struct FileDropEvent {
+    pub paths: Vec<String>,
 }
 
 #[napi(ts_return_type = "{ sessionId: number } | { jobId: number }")]
@@ -787,6 +810,11 @@ pub fn unregister_associations(env: Env) -> Result<()> {
     with_app(env, |app| app.unregister_associations())
 }
 
+#[napi]
+pub fn probe_features(env: Env) -> Result<JsFeatureProbe> {
+    with_app(env, |app| Ok(JsFeatureProbe::from(app.probe_features())))
+}
+
 #[napi(ts_return_type = "{ mountpoint: string } | { error: string }")]
 pub fn fuse_mount(env: Env, session_id: u32) -> Result<JsFuseMountResult> {
     with_app(env, |app| {
@@ -821,8 +849,24 @@ pub fn http_stop(env: Env, session_id: u32) -> Result<()> {
     with_app(env, |app| app.http_stop(session_id))
 }
 
+fn dispatch_file_drop(paths: Vec<String>) {
+    let listeners = js_listeners()
+        .lock()
+        .expect("native event listeners mutex poisoned");
+    let payload = FileDropEvent { paths };
+    for cb in &listeners.file_drop {
+        let _ = cb.call(payload.clone(), ThreadsafeFunctionCallMode::NonBlocking);
+    }
+}
+
+/// Watch the real OS window for file-manager drops. GPUIX 0.6 has no `onDrop`.
+#[napi]
+pub fn start_file_drop_watch() {
+    crate::file_drop::start(dispatch_file_drop);
+}
+
 #[napi(
-    ts_type = "(event: string, callback: (payload: IndexProgressEvent | ExtractProgressEvent | JobSucceededEvent | JobFailedEvent | JobCancelledEvent) => void): void"
+    ts_type = "(event: string, callback: (payload: IndexProgressEvent | ExtractProgressEvent | JobSucceededEvent | JobFailedEvent | JobCancelledEvent | FileDropEvent) => void): void"
 )]
 pub fn on(env: Env, event: String, callback: Function<(), ()>) -> Result<()> {
     let mut listeners = js_listeners()
@@ -863,6 +907,13 @@ pub fn on(env: Env, event: String, callback: Function<(), ()>) -> Result<()> {
                 .callee_handled::<false>()
                 .build_callback(|ctx| Ok(ctx.value))?;
             listeners.job_cancelled.push(tsfn);
+        }
+        "fileDrop" => {
+            let tsfn: EventCb<FileDropEvent> = callback
+                .build_threadsafe_function::<FileDropEvent>()
+                .callee_handled::<false>()
+                .build_callback(|ctx| Ok(ctx.value))?;
+            listeners.file_drop.push(tsfn);
         }
         other => {
             return Err(napi_err(

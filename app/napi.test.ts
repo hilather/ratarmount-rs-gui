@@ -2,8 +2,10 @@ import { expect, test } from 'bun:test'
 
 import {
   CommandError,
+  normalizeConfig,
   normalizeDirPage,
   normalizeExtractPlan,
+  normalizeFindPage,
   normalizeOpenResult,
   wrapNativeModule,
 } from './napi'
@@ -158,6 +160,83 @@ test('wrapNativeModule extract rejects overwrite ask before native', async () =>
     expect((err as CommandError).retryable).toBe(false)
   }
 })
+
+test('normalizeConfig maps index/recent and hides memory', () => {
+  const cfg = normalizeConfig({
+    index: {
+      policy: 'memory',
+      extra_dirs: ['/extra'],
+      recreate: 'always',
+      local_cache_bytes: 1,
+      remember_unwritable_volumes: false,
+      remembered_volumes: ['/archives'],
+    },
+    recent: { paths: ['/a.tar', '', '/b.tar'] },
+    engine: { bundle_cli: false, cli_path: '/opt/ratarmount' },
+    extract: { overwrite: 'skip', allow_unsafe_paths: true },
+    preview: { max_bytes: 4, open_large_with_system: false },
+  })
+  expect(cfg.index.policy).toBe('sibling')
+  expect(cfg.index.extraDirs).toEqual(['/extra'])
+  expect(cfg.index.recreate).toBe('always')
+  expect(cfg.recent.paths).toEqual(['/a.tar', '/b.tar'])
+  expect(cfg.engine.cliPath).toBe('/opt/ratarmount')
+  expect(cfg.extract.allowUnsafePaths).toBe(true)
+})
+
+test('normalizeFindPage is paged with an opaque cursor', () => {
+  const page = normalizeFindPage({
+    pattern: 'file-',
+    mode: 'fts',
+    entries: [{ name: 'a', path: '/a', isDir: false, size: 1, mtime: null, mode: 0 }],
+    next_cursor: 'kset:file-|fts:10',
+    total_hint: 1000,
+  })
+  expect(page.entries).toHaveLength(1)
+  expect(page.nextCursor).toBe('kset:file-|fts:10')
+  expect(Number.isFinite(Number(page.nextCursor))).toBe(false)
+  expect(page.totalHint).toBe(1000)
+})
+
+test('wrapNativeModule find and probeFeatures', async () => {
+  const addon = wrapNativeModule({
+    pickFile: () => null,
+    pickDir: () => null,
+    open: () => ({ sessionId: 1 }),
+    close: () => {},
+    list: () => ({ path: '/', entries: [], nextCursor: null, totalHint: 0 }),
+    lookup: () => null,
+    find: () => ({
+      pattern: 'a',
+      mode: 'fts',
+      entries: [{ name: 'a', path: '/a', isDir: false, size: 1, mtime: null, mode: 0 }],
+      nextCursor: 'kset:a|fts:1',
+      totalHint: 2,
+    }),
+    preview: () => ({ kind: 'skipped', reason: 'unknown' }),
+    extractPlan: () => ({ files: 0, bytes: 0, conflictCount: 0, conflicts: [], conflictsTruncated: false }),
+    extract: () => ({ jobId: 1 }),
+    cancel: () => {},
+    getConfig: () => defaultishConfig(),
+    probeFeatures: () => ({ fuse: false, http: true }),
+    fuseMount: () => ({ error: 'FUSE is not available' }),
+    httpStart: () => ({ url: 'http://127.0.0.1:18755/' }),
+    on: () => {},
+  })
+  const page = await addon.find({ sessionId: 1, pattern: 'a', mode: 'fts' })
+  expect(page.entries).toHaveLength(1)
+  expect(page.nextCursor).not.toBeNull()
+  expect(await addon.probeFeatures()).toEqual({ fuse: false, http: true })
+  expect(await addon.fuseMount(1)).toEqual({ error: 'FUSE is not available' })
+  expect(await addon.httpStart(1)).toEqual({ url: 'http://127.0.0.1:18755/' })
+})
+
+function defaultishConfig() {
+  return {
+    extract: { overwrite: 'ask', allowUnsafePaths: false },
+    preview: { maxBytes: 8 * 1024 * 1024, openLargeWithSystem: true },
+  }
+}
 
 test('normalizeExtractPlan caps conflicts at 50', () => {
   const plan = normalizeExtractPlan({

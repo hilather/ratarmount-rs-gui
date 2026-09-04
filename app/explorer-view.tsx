@@ -1,5 +1,5 @@
 import type { EventPayload } from '@gpuix/react'
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 
 import {
   countLabel,
@@ -12,6 +12,11 @@ import {
   type ClickMods,
   type ExplorerSnapshot,
 } from './explorer'
+import {
+  REMEMBER_VOLUME_LABEL,
+  SIBLING_NOT_WRITABLE_DETAIL,
+  SIBLING_NOT_WRITABLE_PROMPT,
+} from './settings'
 import { PLACEHOLDER } from './window'
 
 const CANVAS = '#1A1A1A'
@@ -23,6 +28,7 @@ const ACCENT = '#2A3F54'
 const BUTTON = '#2C2C2C'
 const BUTTON_HOVER = '#3A3A3A'
 const DANGER = '#E07070'
+const FOCUS_RING = '#6CB2EB'
 const ROW_HEIGHT = 28
 
 export type ExplorerHandlers = {
@@ -46,6 +52,14 @@ export type ExplorerHandlers = {
   onDismissDialog(): void
   onPasswordSubmit(password: string): void
   onExtractOpenSystem(): void
+  onSearch(query: string): void
+  onOpenRecent(path: string): void
+  onDrop(path: string): void
+  onToggleFuse(): void
+  onToggleHttp(): void
+  onCopyHttp(): void
+  onConfirmSibling(): void
+  onToggleSiblingRemember(): void
 }
 
 function modsFrom(event: EventPayload): ClickMods {
@@ -122,6 +136,30 @@ export function explorerHandlers(controller: ExplorerController): ExplorerHandle
     onExtractOpenSystem: () => {
       void controller.extractOpenWithSystem()
     },
+    onSearch: (query) => {
+      void controller.setSearch(query)
+    },
+    onOpenRecent: (path) => {
+      void controller.openRecent(path)
+    },
+    onDrop: (path) => {
+      void controller.openDropped(path)
+    },
+    onToggleFuse: () => {
+      void controller.toggleFuse()
+    },
+    onToggleHttp: () => {
+      void controller.toggleHttp()
+    },
+    onCopyHttp: () => {
+      controller.copyHttpUrl()
+    },
+    onConfirmSibling: () => {
+      void controller.confirmSiblingCache()
+    },
+    onToggleSiblingRemember: () => {
+      controller.toggleSiblingRemember()
+    },
   }
 }
 
@@ -147,6 +185,14 @@ export function ExplorerView({
   onDismissDialog,
   onPasswordSubmit,
   onExtractOpenSystem,
+  onSearch,
+  onOpenRecent,
+  onDrop: _onDrop,
+  onToggleFuse,
+  onToggleHttp,
+  onCopyHttp,
+  onConfirmSibling,
+  onToggleSiblingRemember,
 }: { model: ExplorerSnapshot } & ExplorerHandlers) {
   const crumbs = crumbsFor(model.path)
   const hasSession = model.archivePath != null && model.status !== 'idle'
@@ -212,12 +258,54 @@ export function ExplorerView({
           onClick={onExtractAll}
           disabled={!model.nativeReady || !hasSession || model.status === 'opening'}
         />
+        {model.features.fuse ? (
+          <ToolButton
+            testId="reveal-folder"
+            label={model.fuseMountpoint ? 'Unmount' : 'Reveal as folder'}
+            onClick={onToggleFuse}
+            disabled={!hasSession || model.status === 'opening'}
+          />
+        ) : null}
+        {model.features.http ? (
+          <ToolButton
+            testId="share-http"
+            label={model.httpUrl ? 'Stop HTTP' : 'Share via HTTP'}
+            onClick={onToggleHttp}
+            disabled={!hasSession || model.status === 'opening'}
+          />
+        ) : null}
+        {model.httpUrl ? (
+          <ToolButton
+            testId="http-copy"
+            label={model.httpCopied ? 'Copied' : 'Copy URL'}
+            onClick={onCopyHttp}
+          />
+        ) : null}
         <ToolButton
           testId="settings"
           label="Settings"
           onClick={onSettings}
           disabled={!model.nativeReady}
         />
+        {hasSession ? (
+          <input
+            testId="search"
+            placeholder="Search"
+            value={model.searchQuery}
+            onChange={(event: EventPayload) => onSearch(event.value ?? '')}
+            style={{
+              flexGrow: 1,
+              minWidth: 120,
+              height: 28,
+              paddingLeft: 8,
+              paddingRight: 8,
+              backgroundColor: BUTTON,
+              color: TEXT,
+              borderRadius: 4,
+              fontSize: 13,
+            }}
+          />
+        ) : null}
       </div>
 
       {model.status === 'idle' ? (
@@ -225,6 +313,32 @@ export function ExplorerView({
           <text testId="placeholder" style={{ color: TEXT, fontSize: 16 }}>
             {PLACEHOLDER}
           </text>
+          {model.recentPaths.length > 0 ? (
+            <div
+              testId="recent"
+              style={{ marginTop: 16, flexDirection: 'column', gap: 6, minWidth: 280 }}
+            >
+              <text style={{ color: MUTED, fontSize: 12 }}>Recent</text>
+              {model.recentPaths.map((path, index) => (
+                <div
+                  key={path}
+                  testId={`recent-${index}`}
+                  onClick={() => onOpenRecent(path)}
+                  style={{
+                    paddingLeft: 8,
+                    paddingRight: 8,
+                    paddingTop: 4,
+                    paddingBottom: 4,
+                    borderRadius: 4,
+                    cursor: 'pointer',
+                    hover: { backgroundColor: BUTTON_HOVER },
+                  }}
+                >
+                  <text style={{ color: TEXT, fontSize: 13 }}>{shortenPath(path)}</text>
+                </div>
+              ))}
+            </div>
+          ) : null}
         </Centered>
       ) : null}
 
@@ -305,6 +419,8 @@ export function ExplorerView({
           onRegisterAssociations={onRegisterAssociations}
           onUnregisterAssociations={onUnregisterAssociations}
           onToggleUnsafePaths={onToggleUnsafePaths}
+          onConfirmSibling={onConfirmSibling}
+          onToggleSiblingRemember={onToggleSiblingRemember}
         />
       ) : null}
     </div>
@@ -425,6 +541,8 @@ function Browser({
                     paddingLeft: 8,
                     paddingRight: 8,
                     backgroundColor: selected || focused ? ACCENT : 'transparent',
+                    borderWidth: focused ? 1 : 0,
+                    borderColor: focused ? FOCUS_RING : 'transparent',
                     hover: { backgroundColor: selected || focused ? ACCENT : '#252525' },
                     cursor: 'pointer',
                   }}
@@ -457,6 +575,15 @@ function Browser({
   )
 }
 
+function useFocusRing(): [boolean, () => void, () => void] {
+  // gpuix-test walks function components without a React dispatcher.
+  if (process.argv.some((arg) => arg === 'test' || arg.endsWith('.test.ts'))) {
+    return [false, () => {}, () => {}]
+  }
+  const [focused, setFocused] = useState(false)
+  return [focused, () => setFocused(true), () => setFocused(false)]
+}
+
 function ToolButton({
   testId,
   label,
@@ -468,11 +595,24 @@ function ToolButton({
   onClick: () => void
   disabled?: boolean
 }) {
+  const [focused, onFocus, onBlur] = useFocusRing()
+  const showRing = !disabled && focused
   return (
     <div
       testId={testId}
+      tabIndex={disabled ? undefined : 0}
+      onFocus={onFocus}
+      onBlur={onBlur}
       onClick={() => {
         if (!disabled) {
+          onClick()
+        }
+      }}
+      onKeyDown={(event: EventPayload) => {
+        if (disabled) {
+          return
+        }
+        if (event.key === 'enter' || event.key === ' ' || event.key === 'space') {
           onClick()
         }
       }}
@@ -483,6 +623,8 @@ function ToolButton({
         paddingBottom: 6,
         backgroundColor: BUTTON,
         borderRadius: 4,
+        borderWidth: showRing ? 1 : 0,
+        borderColor: showRing ? FOCUS_RING : 'transparent',
         cursor: disabled ? 'default' : 'pointer',
         opacity: disabled ? 0.4 : 1,
         ...(disabled ? {} : { hover: { backgroundColor: BUTTON_HOVER } }),
@@ -606,6 +748,8 @@ function DialogHost({
   onRegisterAssociations,
   onUnregisterAssociations,
   onToggleUnsafePaths,
+  onConfirmSibling,
+  onToggleSiblingRemember,
 }: {
   model: ExplorerSnapshot
   onConfirmExtract: () => void
@@ -616,6 +760,8 @@ function DialogHost({
   onRegisterAssociations: () => void
   onUnregisterAssociations: () => void
   onToggleUnsafePaths: () => void
+  onConfirmSibling: () => void
+  onToggleSiblingRemember: () => void
 }) {
   const dialog = model.dialog
   return (
@@ -689,6 +835,23 @@ function DialogHost({
               {dialog.message}
             </text>
             <ToolButton testId="path-escape-ok" label="OK" onClick={onDismissDialog} />
+          </>
+        ) : null}
+        {dialog.kind === 'sibling-not-writable' ? (
+          <>
+            <text testId="sibling-dialog" style={{ color: TEXT, fontSize: 14 }}>
+              {SIBLING_NOT_WRITABLE_PROMPT}
+            </text>
+            <text style={{ color: MUTED, fontSize: 12 }}>{SIBLING_NOT_WRITABLE_DETAIL}</text>
+            <ToolButton
+              testId="sibling-remember"
+              label={`${REMEMBER_VOLUME_LABEL}: ${dialog.remember ? 'on' : 'off'}`}
+              onClick={onToggleSiblingRemember}
+            />
+            <div style={{ flexDirection: 'row', gap: 8, justifyContent: 'flex-end' }}>
+              <ToolButton testId="sibling-cancel" label="Cancel" onClick={onDismissDialog} />
+              <ToolButton testId="sibling-use-cache" label="Use user cache" onClick={onConfirmSibling} />
+            </div>
           </>
         ) : null}
         {dialog.kind === 'settings' ? (

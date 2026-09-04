@@ -12,8 +12,13 @@ Goal: behave like 7-Zip / File Roller / The Unarchiver, not like a random unsign
 | Extract to… | `ratarmount-gui --extract-to <dir> <archive>` | Native folder picker if dir omitted |
 | Index only | `ratarmount-gui --index-only <archive>` | Build sidecar per policy, then exit (no window; `--silent` is implied) |
 | Reveal as folder | in-app only | spawn CLI FUSE |
+| Drop archive onto window | in-app, Linux X11 | napi `fileDrop` via `startFileDropWatch` |
 
 Multiple files: v1 opens one window per archive (or tabs if cheap). `--extract-here` may take many paths.
+
+### Drag-and-drop (v1)
+
+GPUIX 0.6 does not expose React `onDrop`. The GUI watches **Linux X11** `XdndSelection` while the pointer is over a window owned by this process (`_NET_WM_PID`) and emits `fileDrop`. The watcher’s Xlib connection installs a no-op `XSetErrorHandler` so a stale `BadWindow` cannot abort the process. Wayland, macOS, and Windows have no drop watcher in v1 (open via picker, recent list, or argv). The X11 loop is not run in CI.
 
 ## Linux
 

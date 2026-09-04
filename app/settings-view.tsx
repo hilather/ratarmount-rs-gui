@@ -35,6 +35,9 @@ export type SettingsHandlers = {
   onRemoveExtraDir(index: number): void
   onPickExplicit(): void
   onClearCache(): void
+  onRegisterAssociations(): void
+  onUnregisterAssociations(): void
+  onToggleUnsafePaths(): void
 }
 
 export function settingsHandlers(controller: SettingsController, onBack: () => void): SettingsHandlers {
@@ -64,6 +67,15 @@ export function settingsHandlers(controller: SettingsController, onBack: () => v
     onClearCache: () => {
       void controller.clearLocalIndexCache()
     },
+    onRegisterAssociations: () => {
+      void controller.registerAssociations()
+    },
+    onUnregisterAssociations: () => {
+      void controller.unregisterAssociations()
+    },
+    onToggleUnsafePaths: () => {
+      void controller.toggleUnsafePaths()
+    },
   }
 }
 
@@ -78,6 +90,9 @@ export function SettingsView({
   onRemoveExtraDir,
   onPickExplicit,
   onClearCache,
+  onRegisterAssociations,
+  onUnregisterAssociations,
+  onToggleUnsafePaths,
 }: { model: SettingsSnapshot } & SettingsHandlers) {
   const previewMib = bytesToMib(model.previewMaxBytes)
   const cacheGib = model.localCacheBytes / (1024 * 1024 * 1024)
@@ -235,6 +250,32 @@ export function SettingsView({
               Wipes local-index-v1 only. Sibling sidecars and the legacy CLI cache stay.
             </text>
           )}
+        </Section>
+
+        <Section title="File associations">
+          <text style={{ color: MUTED, fontSize: 12 }}>
+            Become default handler for TAR/ZIP/7z (best-effort).
+          </text>
+          <div style={{ flexDirection: 'row', gap: 8 }}>
+            <Chip
+              testId="settings-register"
+              label="Register file associations"
+              active={false}
+              onClick={onRegisterAssociations}
+            />
+            <Chip
+              testId="settings-unregister"
+              label="Unregister"
+              active={false}
+              onClick={onUnregisterAssociations}
+            />
+          </div>
+          <Chip
+            testId="settings-unsafe-paths"
+            label={model.allowUnsafePaths ? 'Allow unsafe paths: on' : 'Allow unsafe paths: off'}
+            active={model.allowUnsafePaths}
+            onClick={onToggleUnsafePaths}
+          />
         </Section>
 
         {model.error ? (

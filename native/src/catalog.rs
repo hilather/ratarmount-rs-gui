@@ -41,6 +41,17 @@ impl FakeCatalog {
         }
     }
 
+    /// 100k files so listing tests can assert page-sized results.
+    #[cfg(test)]
+    pub fn hundred_k_files() -> Self {
+        let mut catalog = Self::empty();
+        catalog.add_dir("/");
+        for i in 0..crate::types::HUNDRED_K {
+            catalog.add_file("/", &format!("file-{i:06}"), 1);
+        }
+        catalog
+    }
+
     /// 1000 files named `file-0000.txt` … `file-0999.txt`.
     #[cfg(test)]
     pub fn thousand_files() -> Self {
@@ -89,15 +100,29 @@ impl FakeCatalog {
         })
     }
 
-    pub fn find_matches(&self, pattern: &str, mode: &str) -> Vec<DirEnt> {
-        let mut matches: Vec<DirEnt> = self
-            .entries
-            .values()
-            .filter(|ent| ent.path != "/" && matches_find(ent, pattern, mode))
-            .cloned()
-            .collect();
-        matches.sort_by(|a, b| a.path.cmp(&b.path));
-        matches
+    /// Page a find without cloning the non-visible tail (G3 stub).
+    pub fn find_page(
+        &self,
+        pattern: &str,
+        mode: &str,
+        start: usize,
+        limit: usize,
+    ) -> (Vec<DirEnt>, Option<usize>, i64) {
+        let mut matched = 0usize;
+        let mut entries = Vec::new();
+        let mut next = None;
+        for ent in self.entries.values() {
+            if ent.path == "/" || !matches_find(ent, pattern, mode) {
+                continue;
+            }
+            if matched >= start && entries.len() < limit {
+                entries.push(ent.clone());
+            } else if matched >= start + limit && next.is_none() {
+                next = Some(start + limit);
+            }
+            matched += 1;
+        }
+        (entries, next, matched as i64)
     }
 
     pub fn totals(&self, members: &[String]) -> (i64, i64) {

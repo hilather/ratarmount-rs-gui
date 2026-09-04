@@ -46,6 +46,15 @@ export function keyDownByTestId(node: ReactNode, testId: string, key: string): v
   onKeyDown({ key })
 }
 
+export function dropByTestId(node: ReactNode, testId: string, path: string): void {
+  const el = getByTestId(node, testId)
+  const onDrop = (el.props as { onDrop?: (e: { value: string }) => void }).onDrop
+  if (!onDrop) {
+    throw new Error(`No onDrop handler on testId="${testId}"`)
+  }
+  onDrop({ value: path })
+}
+
 export function collectTestIds(node: ReactNode): string[] {
   const ids: string[] = []
   for (const el of hostElements(node)) {

@@ -6,7 +6,7 @@ test('hello window is titled ratarmount at 1100x720', () => {
   expect(WINDOW_TITLE).toBe('ratarmount')
   expect(WINDOW_WIDTH).toBe(1100)
   expect(WINDOW_HEIGHT).toBe(720)
-  expect(PLACEHOLDER).toBe('Open an archive')
+  expect(PLACEHOLDER).toBe('Open an archive or drop one here')
 })
 
 test('app.tsx uses the hello-window constants on a dark desktop chrome', async () => {
