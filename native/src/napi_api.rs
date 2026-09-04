@@ -713,6 +713,46 @@ pub fn pick_dir() -> Option<String> {
     crate::dialog::pick_dir()
 }
 
+#[napi(object)]
+pub struct JsLaunchIntent {
+    pub action: String,
+    pub dest_dir: Option<String>,
+    pub archives: Vec<String>,
+    pub silent: bool,
+}
+
+impl From<crate::argv::LaunchIntent> for JsLaunchIntent {
+    fn from(intent: crate::argv::LaunchIntent) -> Self {
+        let (action, dest_dir) = match intent.action {
+            crate::argv::LaunchAction::Open => ("open".into(), None),
+            crate::argv::LaunchAction::ExtractHere => ("extract-here".into(), None),
+            crate::argv::LaunchAction::ExtractTo { dest_dir } => ("extract-to".into(), dest_dir),
+            crate::argv::LaunchAction::IndexOnly => ("index-only".into(), None),
+        };
+        Self {
+            action,
+            dest_dir,
+            archives: intent.archives,
+            silent: intent.silent,
+        }
+    }
+}
+
+#[napi]
+pub fn parse_argv(env: Env, args: Vec<String>) -> Result<JsLaunchIntent> {
+    crate::argv::parse_argv(args)
+        .map(JsLaunchIntent::from)
+        .map_err(|e| napi_err(env, e))
+}
+
+#[napi]
+pub fn apply_launch(env: Env, args: Vec<String>) -> Result<()> {
+    with_app(env, |app| {
+        let intent = crate::argv::parse_argv(args)?;
+        app.apply_launch(&intent, crate::dialog::pick_dir)
+    })
+}
+
 #[napi]
 pub fn get_config(env: Env) -> Result<JsConfig> {
     with_app(env, |app| Ok(JsConfig::from(app.get_config())))

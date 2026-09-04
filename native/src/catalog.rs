@@ -63,6 +63,13 @@ impl FakeCatalog {
         catalog
     }
 
+    pub fn with_escape_member() -> Self {
+        let mut catalog = Self::empty();
+        catalog.add_dir("/");
+        catalog.add_file_with_body("/", "../evil.txt", Some(b"nope\n".to_vec()));
+        catalog
+    }
+
     pub fn get(&self, path: &str) -> Option<&DirEnt> {
         self.entries.get(path)
     }
@@ -204,6 +211,15 @@ impl FakeCatalog {
             .entry(parent.to_string())
             .or_default()
             .push(name.to_string());
+    }
+}
+
+pub fn catalog_for_source(source: &str) -> FakeCatalog {
+    let norm = source.replace('\\', "/").to_ascii_lowercase();
+    if norm.contains("unsafe") {
+        FakeCatalog::with_escape_member()
+    } else {
+        FakeCatalog::new()
     }
 }
 

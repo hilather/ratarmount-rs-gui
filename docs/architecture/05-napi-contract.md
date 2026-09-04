@@ -180,6 +180,19 @@ clearLocalIndexCache(): Promise<{ removed: number }>
 registerAssociations(): Promise<void>
 unregisterAssociations(): Promise<void>
 
+/** argv already stripped of argv0 (and the bun script when launched via bun). */
+parseArgv(args: string[]): Promise<{
+  action: 'open' | 'extract-here' | 'extract-to' | 'index-only'
+  destDir: string | null  // null when omitted; the archive is never destDir
+  archives: string[]
+  silent: boolean
+}>
+// `--extract-to -- <archive>` and a single remaining path omit destDir (folder picker).
+// `--silent --extract-to` with dest omitted rejects Internal without opening a picker.
+
+/** Headless extract / index-only. `--silent` maps config ask → skip. Index-only always headless. */
+applyLaunch(args: string[]): Promise<void>
+
 fuseMount(sessionId: SessionId): Promise<{ mountpoint: string } | { error: string }>
 fuseUnmount(sessionId: SessionId): Promise<void>
 
@@ -213,6 +226,7 @@ Do **not** put `extractPlan.conflicts` into React list state as a catalog. The s
 | `--extract-here` / `--extract-to DIR` without `--silent` | yes (unless `--silent`) | same dialog |
 | `--silent` (any extract argv) | no | **skip** (never replace, never dialog) |
 | `--extract-to` with dir omitted | folder picker first, then same as in-app | |
+| `--index-only` | no | n/a (builds sidecar, then exits) |
 
 ### Recursion
 

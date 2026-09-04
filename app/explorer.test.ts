@@ -40,6 +40,9 @@ const noop: ExplorerHandlers = {
   onExtract() {},
   onExtractAll() {},
   onSettings() {},
+  onRegisterAssociations() {},
+  onUnregisterAssociations() {},
+  onToggleUnsafePaths() {},
   onCrumb() {},
   onRowClick() {},
   onKey() {},
@@ -52,9 +55,6 @@ const noop: ExplorerHandlers = {
   onDismissDialog() {},
   onPasswordSubmit() {},
   onExtractOpenSystem() {},
-  onSiblingUseCache() {},
-  onSiblingCancel() {},
-  onSiblingRemember() {},
 }
 
 function renderView(model: ExplorerSnapshot, handlers: Partial<ExplorerHandlers> = {}) {
@@ -137,8 +137,6 @@ test('getByTestId open/list/crumb-* against the fake catalog', async () => {
   expect(queryByTestId(tree, 'crumb-dir-00')).toBeNull()
   expect(getByTestId(tree, 'row-dir-00')).toBeTruthy()
   expect(getByTestId(tree, 'status-count')).toBeTruthy()
-  expect(getByTestId(tree, 'status-policy')).toBeTruthy()
-  expect(getByTestId(tree, 'settings')).toBeTruthy()
 
   const ids = collectTestIds(tree)
   expect(ids.filter((id) => id.startsWith('crumb-'))).toEqual(['crumb-root'])
@@ -454,82 +452,6 @@ test('App wires explorerHandlers onto the injected native', async () => {
   expect(source).toContain('explorerHandlers')
   expect(source).toContain('setNativeLoader')
   expect(source).toContain('native?: NativeAddon')
-  expect(source).toContain('SettingsView')
-})
-
-test('status bar shows policy badge and does not invent local-index-v1 keys', async () => {
-  const { controller } = await openRoot()
-  const snap = controller.getSnapshot()
-  expect(snap.policy).toBe('sibling')
-  expect(snap.indexPath).toBe('/archives/hello.tar.index.sqlite')
-  expect(snap.indexPath).not.toContain('local-index-v1')
-  const tree = renderView(snap)
-  const badge = getByTestId(tree, 'status-policy')
-  expect((badge.props as { children?: string }).children).toBe('sibling')
-})
-
-test('SiblingNotWritable opens the use-user-cache dialog', async () => {
-  const fake = createFakeNative({ pickFile: '/archives/hello.tar', siblingNotWritable: true })
-  const controller = new ExplorerController()
-  controller.setNative(fake)
-  await controller.openPicked()
-  const snap = controller.getSnapshot()
-  expect(snap.status).toBe('error')
-  expect(snap.errorRetryable).toBe(true)
-  expect(snap.siblingDialog?.source).toBe('/archives/hello.tar')
-  const tree = renderView(snap, explorerHandlers(controller))
-  expect(getByTestId(tree, 'sibling-dialog')).toBeTruthy()
-  expect((getByTestId(tree, 'sibling-dialog-title').props as { children?: string }).children).toBe(
-    'Use user cache?',
-  )
-})
-
-test('Use user cache retries open with user-cache policy', async () => {
-  const fake = createFakeNative({ pickFile: '/archives/hello.tar', siblingNotWritable: true })
-  const controller = new ExplorerController()
-  controller.setNative(fake)
-  await controller.openPicked()
-  expect(fake.openCalls[0]?.policy).toBe('sibling')
-  await controller.confirmSiblingUseCache(false)
-  await waitFor(controller, (s) => s.status === 'ready')
-  expect(fake.openCalls[1]?.policy).toBe('user-cache')
-  expect(controller.getSnapshot().policy).toBe('user-cache')
-  expect(controller.getSnapshot().siblingDialog).toBeNull()
-  expect(fake.config.index.rememberedVolumes).toEqual([])
-})
-
-test('remember-volume checkbox persists the archive parent', async () => {
-  const fake = createFakeNative({ pickFile: '/archives/hello.tar', siblingNotWritable: true })
-  const controller = new ExplorerController()
-  controller.setNative(fake)
-  await controller.openPicked()
-  const tree = renderView(controller.getSnapshot(), explorerHandlers(controller))
-  clickByTestId(tree, 'sibling-remember')
-  clickByTestId(tree, 'sibling-use-cache')
-  await waitFor(controller, (s) => s.status === 'ready')
-  expect(fake.config.index.rememberUnwritableVolumes).toBe(true)
-  expect(fake.config.index.rememberedVolumes).toContain('/archives')
-})
-
-test('remembered volume shows user-cache badge on the next sibling-policy open', async () => {
-  const fake = createFakeNative({ pickFile: '/archives/hello.tar' })
-  await fake.setConfig({
-    index: {
-      policy: 'sibling',
-      rememberUnwritableVolumes: true,
-      rememberedVolumes: ['/archives'],
-    },
-  })
-  const controller = new ExplorerController()
-  controller.setNative(fake)
-  await controller.openPicked()
-  expect(fake.openCalls[0]?.policy).toBe('user-cache')
-  expect(controller.getSnapshot().policy).toBe('user-cache')
-  expect(controller.getSnapshot().indexPath).toBe('user cache')
-  const tree = renderView(controller.getSnapshot())
-  expect((getByTestId(tree, 'status-policy').props as { children?: string }).children).toBe(
-    'user-cache',
-  )
 })
 
 test('ctrl-click multi-selects rows without entering a directory', async () => {
@@ -805,4 +727,55 @@ test('Extract is disabled until native is ready', () => {
   clickByTestId(tree, 'extract')
   expect(extracted).toBe(false)
 })
+
+test('argv open path opens that archive', async () => {
+  const fake = createFakeNative()
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.applyArgv(['/archives/hello.tar'])
+  await waitFor(controller, (s) => s.status === 'ready')
+  expect(controller.getSnapshot().archivePath).toBe('/archives/hello.tar')
+  expect(fake.openCalls[0]?.source).toBe('/archives/hello.tar')
+})
+
+test('unsafe-path toggle defaults off and settings register associations', async () => {
+  const fake = createFakeNative()
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await waitFor(controller, (s) => s.nativeReady)
+  await Promise.resolve()
+  expect(controller.getSnapshot().allowUnsafePaths).toBe(false)
+  const idle = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(idle, 'settings')).toBeTruthy()
+  clickByTestId(idle, 'settings')
+  const settings = renderView(controller.getSnapshot(), explorerHandlers(controller))
+  expect(getByTestId(settings, 'settings-dialog')).toBeTruthy()
+  expect(getByTestId(settings, 'settings-unsafe-paths')).toBeTruthy()
+  clickByTestId(settings, 'settings-register')
+  await waitFor(controller, () => fake.registerCalls === 1)
+  clickByTestId(settings, 'settings-unregister')
+  await waitFor(controller, () => fake.unregisterCalls === 1)
+  clickByTestId(settings, 'settings-unsafe-paths')
+  await waitFor(controller, (s) => s.allowUnsafePaths)
+  expect((await fake.getConfig()).extract.allowUnsafePaths).toBe(true)
+})
+
+test('silent extract-to without dest does not treat the archive as destDir', async () => {
+  const fake = createFakeNative()
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.applyArgv(['--silent', '--extract-to', '--', '/tmp/archive.tar'])
+  expect(fake.applyLaunchCalls[0]).toEqual(['--silent', '--extract-to', '--', '/tmp/archive.tar'])
+  expect(fake.extractCalls).toHaveLength(0)
+})
+
+test('index-only is headless and does not stay in the explorer', async () => {
+  const fake = createFakeNative()
+  const controller = new ExplorerController()
+  controller.setNative(fake)
+  await controller.applyArgv(['--index-only', '/archives/hello.tar'])
+  expect(fake.applyLaunchCalls[0]).toEqual(['--index-only', '/archives/hello.tar'])
+  expect(controller.getSnapshot().archivePath).toBeNull()
+})
+
 

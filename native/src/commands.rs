@@ -4,6 +4,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::argv::{
+    native_overwrite_for_launch, overwrite_wire, resolve_extract_dest, LaunchAction, LaunchIntent,
+};
 use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, page_names, sample_conflicts};
 use crate::config::{
     apply_patch, clear_local_index_cache as wipe_local_index_cache, sanitize_config,
@@ -434,11 +437,100 @@ impl NativeApp {
     }
 
     pub fn register_associations(&self) -> Result<()> {
-        Ok(())
+        crate::associations::register_in(&crate::associations::user_data_home())
     }
 
     pub fn unregister_associations(&self) -> Result<()> {
-        Ok(())
+        crate::associations::unregister_in(&crate::associations::user_data_home())
+    }
+
+    pub fn apply_launch(
+        &mut self,
+        intent: &LaunchIntent,
+        mut pick_dir: impl FnMut() -> Option<String>,
+    ) -> Result<()> {
+        if intent.archives.is_empty() && !matches!(intent.action, LaunchAction::Open) {
+            return Err(ApiError::not_found("no archive path"));
+        }
+        let picked = match &intent.action {
+            LaunchAction::ExtractTo { dest_dir: None } => {
+                if intent.silent {
+                    return Err(ApiError::internal(
+                        "extract-to destination omitted; folder picker required",
+                    ));
+                }
+                pick_dir()
+            }
+            _ => None,
+        };
+        match &intent.action {
+            LaunchAction::Open => Ok(()),
+            LaunchAction::ExtractHere | LaunchAction::ExtractTo { .. } => {
+                for archive in &intent.archives {
+                    let dest = resolve_extract_dest(&intent.action, archive, picked.as_deref())?;
+                    self.launch_extract_one(archive, &dest, intent.silent)?;
+                }
+                Ok(())
+            }
+            LaunchAction::IndexOnly => {
+                for archive in &intent.archives {
+                    self.launch_index_only(archive)?;
+                }
+                Ok(())
+            }
+        }
+    }
+
+    fn launch_extract_one(&mut self, archive: &str, dest: &str, silent: bool) -> Result<()> {
+        let overwrite = native_overwrite_for_launch(silent, self.config.extract.overwrite);
+        let session_id = self.open_for_launch(archive)?;
+        let result = self.extract(ExtractOpts {
+            session_id,
+            members: Vec::new(),
+            dest_dir: dest.to_string(),
+            overwrite: overwrite_wire(overwrite).to_string(),
+        });
+        let _ = self.close(session_id);
+        result.map(|_| ())
+    }
+
+    fn launch_index_only(&mut self, archive: &str) -> Result<()> {
+        let session_id = self.open_for_launch(archive)?;
+        self.close(session_id)
+    }
+
+    fn open_for_launch(&mut self, archive: &str) -> Result<u32> {
+        let policy = if self.fake_or_test() {
+            IndexPolicy::Memory
+        } else {
+            self.config.index.policy
+        };
+        let explicit_path = if policy == IndexPolicy::Explicit {
+            let path = self.config.index.explicit_path.clone();
+            if path.is_empty() {
+                None
+            } else {
+                Some(path)
+            }
+        } else {
+            None
+        };
+        match self.open(OpenOpts {
+            source: archive.to_string(),
+            policy,
+            explicit_path,
+            recreate: self.config.index.recreate,
+            password: None,
+            recursive: None,
+            recursion_depth: None,
+        })? {
+            OpenOutcome::Session { session_id } => Ok(session_id),
+            OpenOutcome::Job { job_id } => self
+                .jobs
+                .get(&job_id)
+                .and_then(|job| job.session_id)
+                .ok_or_else(|| ApiError::internal("index-only job produced no session")),
+        }
     }
 
     pub fn fuse_mount(&self, session_id: u32) -> Result<FuseMountResult> {

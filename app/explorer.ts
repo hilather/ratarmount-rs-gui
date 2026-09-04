@@ -1,3 +1,4 @@
+import { extractHereDest, isHeadlessAction } from './argv'
 import {
   CommandError,
   commandErrorFromUnknown,
@@ -5,20 +6,12 @@ import {
   type DirEnt,
   type ExtractConflict,
   type ExtractPlan,
-  type IndexPolicy,
   type NativeAddon,
   type NativeOverwrite,
   type OpenResult,
-  type PersistablePolicy,
   type PreviewResult,
   type SessionId,
 } from './napi'
-import {
-  effectiveOpenPolicy,
-  hideMemoryPolicy,
-  indexLocationHint,
-  volumeKeyForSource,
-} from './settings'
 
 export const LIST_LIMIT_DEFAULT = 200
 export const LIST_LIMIT_MAX = 500
@@ -60,16 +53,12 @@ export type ExplorerDialog =
     }
   | { kind: 'password' }
   | { kind: 'path-escape'; message: string }
+  | { kind: 'settings' }
 
 export type Crumb = {
   testId: string
   label: string
   path: string
-}
-
-export type SiblingDialog = {
-  source: string
-  remember: boolean
 }
 
 export type ExplorerSnapshot = {
@@ -81,8 +70,6 @@ export type ExplorerSnapshot = {
   nativeReady: boolean
   archivePath: string | null
   indexPath: string | null
-  policy: IndexPolicy | null
-  siblingDialog: SiblingDialog | null
   path: string
   entries: DirEnt[]
   nextCursor: Cursor | null
@@ -93,6 +80,7 @@ export type ExplorerSnapshot = {
   previewPath: string | null
   extractJob: ExtractJobView | null
   dialog: ExplorerDialog
+  allowUnsafePaths: boolean
 }
 
 const IDLE: ExplorerSnapshot = {
@@ -104,8 +92,6 @@ const IDLE: ExplorerSnapshot = {
   nativeReady: false,
   archivePath: null,
   indexPath: null,
-  policy: null,
-  siblingDialog: null,
   path: '/',
   entries: [],
   nextCursor: null,
@@ -116,6 +102,7 @@ const IDLE: ExplorerSnapshot = {
   previewPath: null,
   extractJob: null,
   dialog: { kind: 'none' },
+  allowUnsafePaths: false,
 }
 
 export function crumbTestId(path: string): string {
@@ -290,6 +277,19 @@ export class ExplorerController {
         ? { status: 'idle' as const, error: null, errorRetryable: false }
         : {}),
     })
+    void this.loadConfig(native)
+  }
+
+  private async loadConfig(native: NativeAddon): Promise<void> {
+    try {
+      const cfg = await native.getConfig()
+      if (this.disposed) {
+        return
+      }
+      this.patch({ allowUnsafePaths: cfg.extract.allowUnsafePaths === true })
+    } catch {
+      // Keep the default-off unsafe-path toggle.
+    }
   }
 
   failLoad(err: unknown): void {
@@ -308,6 +308,107 @@ export class ExplorerController {
     this.sessionId = null
     if (sessionId != null && this.native) {
       void this.native.close(sessionId)
+    }
+  }
+
+  async applyArgv(args: string[]): Promise<void> {
+    if (args.length === 0) {
+      return
+    }
+    if (!(await this.ensureNative())) {
+      return
+    }
+    const native = this.native
+    if (!native) {
+      return
+    }
+    let intent
+    try {
+      intent = await native.parseArgv(args)
+    } catch (err) {
+      this.setError(err)
+      return
+    }
+    if (intent.action === 'open') {
+      const source = intent.archives[0]
+      if (source) {
+        await this.openSource(source)
+      }
+      return
+    }
+    if (isHeadlessAction(intent.action, intent.silent)) {
+      try {
+        await native.applyLaunch(args)
+      } catch (err) {
+        this.setError(err)
+      }
+      return
+    }
+    const archive = intent.archives[0]
+    if (!archive) {
+      this.setError(new CommandError('NotFound', 'no archive path', false))
+      return
+    }
+    try {
+      await this.openSource(archive)
+      if (intent.action === 'extract-here') {
+        await this.planAndExtract(extractHereDest(archive), [])
+        return
+      }
+      if (intent.action === 'extract-to') {
+        let dest = intent.destDir
+        if (dest == null || dest === archive || intent.archives.includes(dest)) {
+          dest = (await native.pickDir()) ?? null
+        }
+        if (dest == null || dest === archive) {
+          return
+        }
+        await this.planAndExtract(dest, [])
+      }
+    } catch (err) {
+      this.handleExtractError(err)
+    }
+  }
+
+  openSettings(): void {
+    this.patch({ dialog: { kind: 'settings' } })
+  }
+
+  async registerAssociations(): Promise<void> {
+    const native = this.native
+    if (!native) {
+      return
+    }
+    try {
+      await native.registerAssociations()
+    } catch (err) {
+      this.setError(err)
+    }
+  }
+
+  async unregisterAssociations(): Promise<void> {
+    const native = this.native
+    if (!native) {
+      return
+    }
+    try {
+      await native.unregisterAssociations()
+    } catch (err) {
+      this.setError(err)
+    }
+  }
+
+  async toggleUnsafePaths(): Promise<void> {
+    const native = this.native
+    if (!native) {
+      return
+    }
+    const next = !this.snapshot.allowUnsafePaths
+    try {
+      const cfg = await native.setConfig({ extract: { allowUnsafePaths: next } })
+      this.patch({ allowUnsafePaths: cfg.extract.allowUnsafePaths === true })
+    } catch (err) {
+      this.setError(err)
     }
   }
 
@@ -333,31 +434,12 @@ export class ExplorerController {
     }
   }
 
-  async openSource(source: string, password?: string, policyOverride?: PersistablePolicy): Promise<void> {
+  async openSource(source: string, password?: string): Promise<void> {
     const native = this.requireNative()
     if (!native) {
       return
     }
     const gen = ++this.gen
-    let policy: PersistablePolicy = policyOverride ?? 'sibling'
-    let recreate: 'never' | 'if-invalid' | 'always' = 'if-invalid'
-    let explicitPath: string | undefined
-    try {
-      const cfg = await native.getConfig()
-      policy = policyOverride ?? hideMemoryPolicy(cfg.index.policy)
-      if (policyOverride == null) {
-        policy = effectiveOpenPolicy(
-          policy,
-          source,
-          cfg.index.rememberedVolumes,
-          cfg.index.rememberUnwritableVolumes,
-        )
-      }
-      recreate = cfg.index.recreate
-      explicitPath = cfg.index.explicitPath || undefined
-    } catch {
-      // Keep sibling / if-invalid if config is unavailable.
-    }
     this.patch({
       status: 'opening',
       listing: true,
@@ -373,9 +455,7 @@ export class ExplorerController {
       previewPath: null,
       path: '/',
       archivePath: source,
-      policy,
-      siblingDialog: null,
-      indexPath: indexLocationHint(policy, source, explicitPath),
+      indexPath: siblingIndexPath(source),
       dialog: { kind: 'none' },
     })
     try {
@@ -385,9 +465,8 @@ export class ExplorerController {
       }
       const outcome = await native.open({
         source,
-        policy,
-        recreate,
-        ...(explicitPath ? { explicitPath } : {}),
+        policy: 'sibling',
+        recreate: 'if-invalid',
         ...(password === undefined ? {} : { password }),
       })
       const sessionId = await this.sessionFromOpen(outcome)
@@ -413,56 +492,8 @@ export class ExplorerController {
         })
         return
       }
-      if (ce.code === 'SiblingNotWritable') {
-        this.patch({
-          status: 'error',
-          listing: false,
-          loadingMore: false,
-          error: ce.message,
-          errorRetryable: true,
-          siblingDialog: { source, remember: false },
-        })
-        return
-      }
       this.setError(err)
     }
-  }
-
-  toggleSiblingRemember(): void {
-    const dialog = this.snapshot.siblingDialog
-    if (!dialog) {
-      return
-    }
-    this.patch({ siblingDialog: { ...dialog, remember: !dialog.remember } })
-  }
-
-  async confirmSiblingUseCache(remember = this.snapshot.siblingDialog?.remember ?? false): Promise<void> {
-    const dialog = this.snapshot.siblingDialog
-    const native = this.native
-    if (!dialog || !native) {
-      return
-    }
-    if (remember) {
-      try {
-        const cfg = await native.getConfig()
-        const volume = volumeKeyForSource(dialog.source)
-        const volumes = cfg.index.rememberedVolumes.includes(volume)
-          ? cfg.index.rememberedVolumes
-          : [...cfg.index.rememberedVolumes, volume]
-        await native.setConfig({
-          index: { rememberUnwritableVolumes: true, rememberedVolumes: volumes },
-        })
-      } catch (err) {
-        this.setError(err)
-        return
-      }
-    }
-    this.patch({ siblingDialog: null })
-    await this.openSource(dialog.source, undefined, 'user-cache')
-  }
-
-  cancelSiblingDialog(): void {
-    this.patch({ siblingDialog: null })
   }
 
   async submitPassword(password: string): Promise<void> {
@@ -496,6 +527,7 @@ export class ExplorerController {
     this.replace({
       ...IDLE,
       nativeReady: this.native != null,
+      allowUnsafePaths: this.snapshot.allowUnsafePaths,
     })
   }
 

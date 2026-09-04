@@ -1,10 +1,11 @@
+import { parseLaunchArgv } from './argv'
 import {
   CommandError,
   defaultConfig,
   PREVIEW_CEILING_BYTES,
-  type CacheClearResult,
   type Config,
   type ConfigPatch,
+  type CacheClearResult,
   type DirEnt,
   type ExtractOpts,
   type ExtractPlan,
@@ -12,6 +13,7 @@ import {
   type JobCancelledEvent,
   type JobFailedEvent,
   type JobSucceededEvent,
+  type LaunchIntentWire,
   type ListOpts,
   type NativeAddon,
   type OpenOpts,
@@ -27,6 +29,7 @@ export const NINE_MIB = 9 * 1024 * 1024
 
 const LIST_LIMIT_DEFAULT = 200
 const LIST_LIMIT_MAX = 500
+const PREVIEW_DEFAULT = 8 * 1024 * 1024
 
 type JobSucceededListener = (event: JobSucceededEvent) => void
 type JobFailedListener = (event: JobFailedEvent) => void
@@ -37,11 +40,14 @@ export type FakeNative = NativeAddon & {
   listCalls: ListOpts[]
   openCalls: OpenOpts[]
   closedSessions: number[]
+  config: Config
+  cacheClears: number
   extractCalls: ExtractOpts[]
   previewCalls: { sessionId: number; path: string }[]
   extractPlanCalls: { sessionId: number; members: string[]; destDir: string }[]
-  config: Config
-  cacheClears: number
+  applyLaunchCalls: string[][]
+  registerCalls: number
+  unregisterCalls: number
   written: Map<string, Uint8Array>
   extractMode: 'ok' | 'hold' | 'busy' | 'path-escape'
   completeExtract(jobId: number): void
@@ -58,8 +64,6 @@ export function createFakeNative(
     extractPlan?: Partial<ExtractPlan>
     config?: Partial<Config>
     extraFiles?: { parent: string; name: string; size: number; body?: string }[]
-    siblingNotWritable?: boolean
-    cacheRemoved?: number
   } = {},
 ): FakeNative {
   let nextSession = 1
@@ -72,6 +76,9 @@ export function createFakeNative(
   const extractCalls: ExtractOpts[] = []
   const previewCalls: { sessionId: number; path: string }[] = []
   const extractPlanCalls: { sessionId: number; members: string[]; destDir: string }[] = []
+  const applyLaunchCalls: string[][] = []
+  let registerCalls = 0
+  let unregisterCalls = 0
   const written = new Map<string, Uint8Array>()
   const succeeded: JobSucceededListener[] = []
   const failed: JobFailedListener[] = []
@@ -79,28 +86,38 @@ export function createFakeNative(
   const extractProgress: ExtractProgressListener[] = []
   const heldJobs = new Set<number>()
   let cacheClears = 0
-  let config = defaultConfig()
-  if (options.config?.extract) {
-    config = { ...config, extract: { ...config.extract, ...options.config.extract } }
+  let config: Config = {
+    ...defaultConfig(),
+    extract: {
+      overwrite: options.config?.extract?.overwrite ?? 'ask',
+      allowUnsafePaths: options.config?.extract?.allowUnsafePaths ?? false,
+    },
+    preview: {
+      maxBytes: options.config?.preview?.maxBytes ?? PREVIEW_DEFAULT,
+      openLargeWithSystem: options.config?.preview?.openLargeWithSystem ?? true,
+    },
   }
-  if (options.config?.preview) {
-    config = { ...config, preview: { ...config.preview, ...options.config.preview } }
-  }
-  if (options.config?.index) {
-    config = { ...config, index: { ...config.index, ...options.config.index } }
-  }
-  config.preview.maxBytes = Math.min(
-    options.config?.preview?.maxBytes ?? config.preview.maxBytes,
-    PREVIEW_CEILING_BYTES,
-  )
 
   const fake: FakeNative = {
     listCalls,
     openCalls,
     closedSessions,
+    get config() {
+      return config
+    },
+    get cacheClears() {
+      return cacheClears
+    },
     extractCalls,
     previewCalls,
     extractPlanCalls,
+    applyLaunchCalls,
+    get registerCalls() {
+      return registerCalls
+    },
+    get unregisterCalls() {
+      return unregisterCalls
+    },
     written,
     extractMode: options.extractMode ?? 'ok',
     completeExtract(jobId: number) {
@@ -123,12 +140,6 @@ export function createFakeNative(
         cb(event)
       }
     },
-    get config() {
-      return config
-    },
-    get cacheClears() {
-      return cacheClears
-    },
     async pickFile() {
       return options.pickFile === undefined ? '/tmp/hello.tar' : options.pickFile
     },
@@ -137,13 +148,6 @@ export function createFakeNative(
     },
     async open(opts) {
       openCalls.push(opts)
-      if (options.siblingNotWritable && opts.policy === 'sibling') {
-        throw new CommandError(
-          'SiblingNotWritable',
-          'The directory next to the archive is not writable',
-          true,
-        )
-      }
       const mode = options.openMode ?? (opts.recreate === 'always' ? 'job' : 'session')
       if (mode === 'bad-password') {
         if (opts.password !== FAKE_ENCRYPTED_PASSWORD) {
@@ -328,7 +332,7 @@ export function createFakeNative(
       }
     },
     async getConfig() {
-      return structuredClone(config)
+      return config
     },
     async setConfig(patch: ConfigPatch) {
       if (patch.index) {
@@ -388,7 +392,41 @@ export function createFakeNative(
     },
     async clearLocalIndexCache(): Promise<CacheClearResult> {
       cacheClears += 1
-      return { removed: options.cacheRemoved ?? 1 }
+      return { removed: 0 }
+    },
+    async parseArgv(args: string[]): Promise<LaunchIntentWire> {
+      const intent = parseLaunchArgv(args)
+      if (intent.action.kind === 'extract-to') {
+        return {
+          action: 'extract-to',
+          destDir: intent.action.destDir,
+          archives: intent.archives,
+          silent: intent.silent,
+        }
+      }
+      return {
+        action: intent.action.kind,
+        destDir: null,
+        archives: intent.archives,
+        silent: intent.silent,
+      }
+    },
+    async applyLaunch(args: string[]) {
+      applyLaunchCalls.push(args)
+      const intent = parseLaunchArgv(args)
+      if (intent.action.kind === 'extract-to' && intent.action.destDir == null && intent.silent) {
+        throw new CommandError(
+          'Internal',
+          'extract-to destination omitted; folder picker required',
+          false,
+        )
+      }
+    },
+    async registerAssociations() {
+      registerCalls += 1
+    },
+    async unregisterAssociations() {
+      unregisterCalls += 1
     },
     on(event, cb) {
       if (event === 'jobSucceeded') {

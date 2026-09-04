@@ -10,16 +10,18 @@ Goal: behave like 7-Zip / File Roller / The Unarchiver, not like a random unsign
 | Open with… | same | same |
 | Extract here | `ratarmount-gui --extract-here <archive>` | Index if needed, extract all members next to archive, no window if `--silent` |
 | Extract to… | `ratarmount-gui --extract-to <dir> <archive>` | Native folder picker if dir omitted |
-| Index only | `ratarmount-gui --index-only <archive>` | Build sidecar per policy, then exit |
+| Index only | `ratarmount-gui --index-only <archive>` | Build sidecar per policy, then exit (no window; `--silent` is implied) |
 | Reveal as folder | in-app only | spawn CLI FUSE |
 
 Multiple files: v1 opens one window per archive (or tabs if cheap). `--extract-here` may take many paths.
 
 ## Linux
 
+Shipped fragments (W7 copies them into the installer): [`integrations/linux/`](../../integrations/linux/), [`integrations/macos/Info.plist`](../../integrations/macos/Info.plist), [`integrations/windows/ratarmount-gui.reg`](../../integrations/windows/ratarmount-gui.reg). Manual QA: [`docs/qa-os-integration.md`](../qa-os-integration.md).
+
 ### Desktop file
 
-`ratarmount-gui.desktop`
+`integrations/linux/ratarmount-gui.desktop`
 
 ```
 [Desktop Entry]
@@ -44,7 +46,7 @@ Exec=ratarmount-gui --extract-here %F
 
 ### MIME
 
-Register the compressed-TAR types that some desktops only know as `application/zstd`. Ship `ratarmount-gui.xml` so `.tar.zst` / `.tzst` / `.tgz` open the GUI.
+Register the compressed-TAR types that some desktops only know as `application/zstd`. Ship `integrations/linux/ratarmount-gui.xml` so `.tar.zst` / `.tzst` / `.tgz` open the GUI.
 
 Installer postinst: `update-desktop-database` + `update-mime-database`.  
 Do **not** silently steal `inode/directory`.  
@@ -56,7 +58,7 @@ Use a tiny native wrapper that forwards argv into the already-running app if one
 
 ## macOS
 
-`Info.plist` `CFBundleDocumentTypes` + exported UTIs for `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.tzst`, `.zip`, `.7z`, `.iso` (subset matching engine support).
+`integrations/macos/Info.plist` `CFBundleDocumentTypes` + exported UTIs for `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.tzst`, `.zip`, `.7z`, `.iso` (subset matching engine support).
 
 Role: `Viewer` (not Editor) in v1.
 
@@ -66,7 +68,7 @@ Gatekeeper: signed + notarized `.app` (engine already signs tarballs with cosign
 
 ## Windows
 
-Installer writes:
+Installer writes (`integrations/windows/ratarmount-gui.reg`):
 
 ```
 HKCU\Software\Classes\.tar\OpenWithProgids\ratarmount-gui.Archive

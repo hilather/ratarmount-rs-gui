@@ -1,0 +1,50 @@
+Windows Registry Editor Version 5.00
+
+; File associations for ratarmount-gui (HKCU, per-user).
+; ExtractTo uses --extract-to -- "%1" so %1 is the archive, never destDir.
+; Do not register .exe or .msi.
+
+[HKEY_CURRENT_USER\Software\Classes\.tar]
+[HKEY_CURRENT_USER\Software\Classes\.tar\OpenWithProgids]
+"ratarmount-gui.Archive"=""
+
+[HKEY_CURRENT_USER\Software\Classes\.tar.gz]
+[HKEY_CURRENT_USER\Software\Classes\.tar.gz\OpenWithProgids]
+"ratarmount-gui.Archive"=""
+
+[HKEY_CURRENT_USER\Software\Classes\.tgz]
+[HKEY_CURRENT_USER\Software\Classes\.tgz\OpenWithProgids]
+"ratarmount-gui.Archive"=""
+
+[HKEY_CURRENT_USER\Software\Classes\.tar.zst]
+[HKEY_CURRENT_USER\Software\Classes\.tar.zst\OpenWithProgids]
+"ratarmount-gui.Archive"=""
+
+[HKEY_CURRENT_USER\Software\Classes\.zip]
+[HKEY_CURRENT_USER\Software\Classes\.zip\OpenWithProgids]
+"ratarmount-gui.Archive"=""
+
+[HKEY_CURRENT_USER\Software\Classes\.7z]
+[HKEY_CURRENT_USER\Software\Classes\.7z\OpenWithProgids]
+"ratarmount-gui.Archive"=""
+
+[HKEY_CURRENT_USER\Software\Classes\ratarmount-gui.Archive]
+@="Archive"
+
+[HKEY_CURRENT_USER\Software\Classes\ratarmount-gui.Archive\shell\open]
+@="Open"
+
+[HKEY_CURRENT_USER\Software\Classes\ratarmount-gui.Archive\shell\open\command]
+@="\"C:\\Program Files\\ratarmount-gui\\ratarmount-gui.exe\" \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\ratarmount-gui.Archive\shell\ExtractHere]
+@="Extract here"
+
+[HKEY_CURRENT_USER\Software\Classes\ratarmount-gui.Archive\shell\ExtractHere\command]
+@="\"C:\\Program Files\\ratarmount-gui\\ratarmount-gui.exe\" --extract-here \"%1\""
+
+[HKEY_CURRENT_USER\Software\Classes\ratarmount-gui.Archive\shell\ExtractTo]
+@="Extract to…"
+
+[HKEY_CURRENT_USER\Software\Classes\ratarmount-gui.Archive\shell\ExtractTo\command]
+@="\"C:\\Program Files\\ratarmount-gui\\ratarmount-gui.exe\" --extract-to -- \"%1\""
