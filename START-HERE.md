@@ -2,7 +2,7 @@
 
 You are in **ratarmount-rs-gui**, a native GPUIX desktop archive explorer for [ratarmount-rs](https://github.com/hilather/ratarmount-rs).
 
-Status: **W1 napi stubs**. `cd app && bun install && bun run dev` opens a 1100×720 window titled “ratarmount”. Native commands live in `native/` (`cargo test -p native` / `cargo run -p native -- --self-test`) against a fake in-memory catalog. Explorer chrome is W3.
+Status: **W3 explorer chrome**. `cd app && bun install && bun run dev` opens a 1100×720 window titled “ratarmount” with Open/Close, breadcrumbs, and a paged virtual list. Native commands live in `native/` (`cargo test -p native` / `cargo run -p native -- --self-test`) against a fake in-memory catalog until W2.
 
 ## Read in this order
 

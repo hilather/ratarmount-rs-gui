@@ -1,31 +1,46 @@
 import { render } from '@gpuix/react'
+import { useEffect, useMemo, useSyncExternalStore } from 'react'
 
-import { PLACEHOLDER, WINDOW_HEIGHT, WINDOW_TITLE, WINDOW_WIDTH } from './window'
-// Native napi addon (W1): after `cd native && bun run build`, W3 imports
-//   import { pickFile, list, open, close, on } from '../native'
-// See native-addon.ts. Do not load archive member bytes through this addon.
+import { ExplorerController } from './explorer'
+import { ExplorerView, explorerHandlers } from './explorer-view'
+import { loadNativeAddon } from './native-addon'
+import type { NativeAddon } from './napi'
+import { WINDOW_HEIGHT, WINDOW_TITLE, WINDOW_WIDTH } from './window'
 
-const CANVAS = '#1A1A1A'
-const TEXT = '#E2E2E2'
-
-export function App() {
-  return (
-    <div
-      testId="hello"
-      style={{
-        width: '100%',
-        height: '100%',
-        backgroundColor: CANVAS,
-        display: 'flex',
-        alignItems: 'center',
-        justifyContent: 'center',
-      }}
-    >
-      <text testId="placeholder" style={{ color: TEXT, fontSize: 16 }}>
-        {PLACEHOLDER}
-      </text>
-    </div>
+export function App({ native }: { native?: NativeAddon } = {}) {
+  const controller = useMemo(() => new ExplorerController(), [])
+  const model = useSyncExternalStore(
+    controller.subscribe,
+    controller.getSnapshot,
+    controller.getSnapshot,
   )
+  const handlers = useMemo(() => explorerHandlers(controller), [controller])
+
+  useEffect(() => {
+    if (native) {
+      controller.setNative(native)
+      return () => controller.dispose()
+    }
+    controller.setNativeLoader(loadNativeAddon)
+    let cancelled = false
+    loadNativeAddon()
+      .then((addon) => {
+        if (!cancelled) {
+          controller.setNative(addon)
+        }
+      })
+      .catch((err: unknown) => {
+        if (!cancelled) {
+          controller.failLoad(err)
+        }
+      })
+    return () => {
+      cancelled = true
+      controller.dispose()
+    }
+  }, [controller, native])
+
+  return <ExplorerView model={model} {...handlers} />
 }
 
 // Skip `render()` when this module is imported.
