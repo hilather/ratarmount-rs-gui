@@ -1,6 +1,9 @@
 import { render } from '@gpuix/react'
 
 import { PLACEHOLDER, WINDOW_HEIGHT, WINDOW_TITLE, WINDOW_WIDTH } from './window'
+// Native napi addon (W1): after `cd native && bun run build`, W3 imports
+//   import { pickFile, list, open, close, on } from '../native'
+// See native-addon.ts. Do not load archive member bytes through this addon.
 
 const CANVAS = '#1A1A1A'
 const TEXT = '#E2E2E2'

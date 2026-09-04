@@ -4,6 +4,8 @@ This is the only API React may call. Agents implementing UI against anything els
 
 All commands are async. Large work returns `{ jobId }` and completes via events.
 
+W1 stubs: the compiled addon is synchronous (`#[napi] fn`, not `async fn`). JS `await cmd()` still works. Long index/extract work in W2+ must return `{ jobId }` before running on a worker — do not block the GPUI/Bun thread.
+
 There is **no** `readAll` command. Do not add one.
 
 Native **must not** return a raw SQLite `offset: u64` (or rowid) to JS as a paging API. Paging uses an **opaque** `cursor: string` that native may encode as rowid, path, or both. JS treats the cursor as a black box and must not parse it.
@@ -227,7 +229,7 @@ on('jobFailed', (e: { jobId: JobId; code: string; message: string; retryable: bo
 on('jobCancelled', (e: { jobId: JobId }) => {})
 ```
 
-Command-level errors use the same `{ code, message, retryable }` shape as `jobFailed` (minus `jobId`).
+Command-level errors use the same `{ code, message, retryable }` shape as `jobFailed` (minus `jobId`). Thrown JS `Error` objects have those own properties (`e.code`, `e.message`, `e.retryable`); do not parse a status string.
 
 ## Error codes
 

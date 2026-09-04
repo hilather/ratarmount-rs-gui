@@ -4,7 +4,7 @@ A native GPU-rendered archive explorer that indexes and browses multi-gigabyte T
 
 GPUIX (React + Zed GPUI) in the UI process. `ratarmount-session` in-process for index / list / extract. No Electron. No webview. Archive bytes never enter the JavaScript heap.
 
-**Status:** W0 hello window. `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount`. Archive open and native session wiring are not connected yet.
+**Status:** W1 napi stubs + fake catalog. `bun run dev` in `app/` opens a 1100×720 GPUIX window titled `ratarmount`. Native commands (`pickFile`, `list`, …) are stubs against an in-memory catalog; explorer chrome is W3.
 
 Chrome/Electron `ArrayBuffer` and wasm32 linear memory both cap around 2–4 GiB — that is the failure mode this product exists to avoid. The desktop GPUIX build is in scope **only if** React never sees archive bytes. The GPUIX browser/`bun run web` target is out of scope.
 
@@ -53,13 +53,18 @@ Desktop GPUIX only. Do not use a GPUIX browser/Wasm target.
 # UI process
 cd app && bun install && bun run dev
 
-# Native crate (unwired stub; napi session wiring comes later)
+# Native crate (napi stubs + fake catalog)
 cargo test -p native
+cargo run -p native -- --self-test
+
+# Optional: build the Bun-loadable addon (`napi-addon` feature), then (W3) import it:
+#   import { pickFile, list, open, close, on } from '../native'
+cd native && bun install && bun run build
 ```
 
-Window: 1100×720, title `ratarmount`, placeholder “Open an archive”. Opening an archive is not implemented yet.
+Window: 1100×720, title `ratarmount`, placeholder “Open an archive”. The hello window does not load the addon yet. Set `RGUI_FAKE=1` so `open` accepts any path and serves the fake catalog.
 
-The native window title is a **manual** smoke check. Automated coverage is `cargo test -p native` and `bun test` in `app/`.
+The native window title is a **manual** smoke check. Automated coverage is `cargo test -p native` (and `native --self-test`) and `bun test` in `app/`.
 
 ## Platforms (v1)
 

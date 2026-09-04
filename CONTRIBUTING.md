@@ -9,13 +9,13 @@ This repository is a native GPUIX desktop explorer for [ratarmount-rs](https://g
 3. Read the current wave file under [docs/implementation/waves/](docs/implementation/waves/).
 4. If the change is architectural, read [docs/design/design.md](docs/design/design.md) and any relevant ADR.
 
-Status today: **W0 hello window**. Native crate is an unwired stub; napi wiring is the next wave.
+Status today: **W1 napi stubs**. Native crate exposes the 05 contract against a fake catalog (`cargo test -p native`, `native --self-test`). Explorer chrome is W3.
 
 ## Tests
 
 - Every behavior change and bug fix lands with automated tests in the **same change**.
 - Bug fixes: a test that fails before the fix and passes after. Mark it `Regression:` plus a short symptom.
-- Native: `cargo test -p native` (and `native --self-test` once W1 lands).
+- Native: `cargo test -p native` and `cargo run -p native -- --self-test`. Default tests do not compile `napi_api.rs`; also run `cargo clippy -p native --lib --features napi-addon -- -D warnings`.
 - UI: GPUIX `getByTestId` against small fixtures under `native/tests/fixtures/`.
 - Never delete or weaken a test unless it is provably incorrect; document why.
 - Do not put 40 GiB archives in CI.
@@ -31,6 +31,7 @@ CI is mandatory. Do not skip or weaken tests to go green.
 ```bash
 cargo fmt --all
 cargo clippy -p native --all-targets -- -D warnings
+cargo clippy -p native --lib --features napi-addon -- -D warnings
 cargo test -p native
 (cd app && bun test)
 ```

@@ -68,7 +68,8 @@ When you fix a **new** production bug, **add a row** here and ship the test in t
 
 | Symptom / fix | Commands |
 |---------------|----------|
-| *(empty — seed)* | |
+| Command errors thrown as GenericFailure string | `cargo test -p native regression_command_errors_expose_code_and_retryable_fields` |
+| Last-page `nextCursor` omitted (W3 infinite list) | `cargo test -p native regression_last_page_next_cursor_is_null_not_omitted` |
 
 ## CI is mandatory
 
@@ -83,6 +84,7 @@ Before every commit:
 ```bash
 cargo fmt --all
 cargo clippy -p native --all-targets -- -D warnings
+cargo clippy -p native --lib --features napi-addon -- -D warnings
 cargo test -p native
 (cd app && bun test)
 ```

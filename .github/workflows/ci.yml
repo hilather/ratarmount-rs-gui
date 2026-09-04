@@ -20,10 +20,16 @@ jobs:
         run: cargo fmt --all -- --check
       - name: Clippy
         run: cargo clippy -p native --all-targets -- -D warnings
+      - name: Clippy (napi addon)
+        run: cargo clippy -p native --lib --features napi-addon -- -D warnings
       - name: Check
         run: cargo check -p native
+      - name: Check napi addon
+        run: cargo check -p native --lib --features napi-addon
       - name: Test
         run: cargo test -p native
+      - name: Self-test
+        run: cargo run -p native -- --self-test
 
   app:
     runs-on: ubuntu-latest
