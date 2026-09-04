@@ -38,7 +38,7 @@ Install fragments from `integrations/linux/` (`update-desktop-database` + `updat
 
 ## macOS
 
-`integrations/macos/Info.plist` (copied into the `.app` in W7).
+`integrations/macos/Info.plist` (copied into the `.app` by `packaging/build-macos-app.sh`; version stamped from `packaging/engine-pin`).
 
 - [ ] Document types include `.tar`, `.tar.gz`, `.tgz`, `.tar.bz2`, `.tar.xz`, `.tar.zst`, `.tzst`, `.zip`, `.7z`, `.iso`
 - [ ] Role is **Viewer**, not Editor
@@ -47,7 +47,7 @@ Install fragments from `integrations/linux/` (`update-desktop-database` + `updat
 
 ## Windows
 
-`integrations/windows/ratarmount-gui.reg` (HKCU). Installer (W7) writes the same keys.
+`integrations/windows/ratarmount-gui.reg` (HKCU). `packaging/build-windows-msi.sh` stages the fragment and the WiX source writes the same HKCU keys (`RegistryValue`; ExtractTo is `--extract-to -- "%1"`). Settings → Register still imports the fragment.
 
 - [ ] Open With → ratarmount for `.tar` / `.tgz` / `.tar.zst` / `.zip` / `.7z`
 - [ ] Context menu **Extract here** → `--extract-here "%1"`

@@ -1,0 +1,25 @@
+# Generated/filled by packaging/build-linux-packages.sh
+name: "@NAME@"
+arch: "@ARCH@"
+platform: linux
+version: "@VERSION@"
+section: utils
+priority: optional
+maintainer: "@MAINTAINER@"
+description: |
+  Native GPU-rendered archive explorer for ratarmount-rs.
+  List, extract, preview, and search run in-process (ratarmount-session).
+  The ratarmount CLI is a package dependency, not a list/extract backend.
+  FUSE is optional (Reveal as folder). Electron/WebView are not required.
+vendor: ratarmount-rs-gui
+homepage: https://github.com/hilather/ratarmount-rs-gui
+license: MIT
+depends:
+@DEPENDS@
+recommends:
+@RECOMMENDS@
+contents:
+@CONTENTS@
+scripts:
+  postinstall: packaging/linux/postinst.sh
+  postremove: packaging/linux/postrm.sh

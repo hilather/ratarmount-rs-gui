@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" role="img" aria-label="ratarmount">
+  <rect width="256" height="256" rx="52" fill="#15202b"/>
+  <rect x="44" y="70" width="168" height="132" rx="16" fill="#2e6b8a"/>
+  <rect x="44" y="70" width="168" height="40" rx="16" fill="#5dade2"/>
+  <rect x="44" y="94" width="168" height="16" fill="#5dade2"/>
+  <path d="M78 178 L128 108 L178 178 Z" fill="#e8eef4"/>
+  <rect x="116" y="150" width="24" height="28" fill="#15202b"/>
+</svg>

@@ -50,3 +50,6 @@ coverage/
 .cache/
 tmp/
 .tmpdir/
+
+# Downloaded engine CLI (never commit; packaging must not invent a stub)
+third_party/cli/

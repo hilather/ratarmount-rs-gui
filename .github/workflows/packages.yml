@@ -1,0 +1,189 @@
+# GUI installers. Distro packages Depends: ratarmount (>= pin) and do not ship
+# /usr/bin/ratarmount. Standalone artifacts bundle the engine CLI when the
+# ratarmount-rs release asset is available (never invent a stub CLI).
+#
+# Triggers: tag v*, workflow_dispatch, packaging PR paths.
+# Cosign keyless on tag when real artifacts exist. Apple notarize is skipped
+# without CODESIGN_IDENTITY (Right-click → Open until a cert exists).
+name: Packages
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "packaging/**"
+      - ".github/workflows/packages.yml"
+      - "integrations/**"
+      - "docs/architecture/03-distribution.md"
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  NFPM_VERSION: v2.41.3
+
+jobs:
+  tests:
+    name: packaging tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Layout / Depends / version / tag dry-run
+        run: bash packaging/run-tests.sh
+
+  # Tag job: version pin must match engine-pin. Produce standalone artifacts only
+  # when a real GUI binary AND a fetched engine CLI exist. Never publish dummies.
+  release:
+    name: Sign & release
+    if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
+    needs: [tests]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve package version (must match engine-pin)
+        run: |
+          set -euo pipefail
+          bash packaging/version.sh --resolve | tee -a "$GITHUB_ENV"
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: "1.4.0"
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Try GUI compile (best-effort)
+        id: gui
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          (cd app && bun install --frozen-lockfile && bun run build)
+          test -f app/dist/ratarmount-gui
+          (cd native && bun install --frozen-lockfile && bun run build) || true
+          echo "gui_bin=app/dist/ratarmount-gui" >> "$GITHUB_OUTPUT"
+
+      - name: Try fetch engine CLI (best-effort; never stub)
+        id: cli
+        continue-on-error: true
+        run: |
+          set -euo pipefail
+          cli="$(bash packaging/fetch-engine-cli.sh)"
+          test -s "$cli"
+          echo "cli_bin=${cli}" >> "$GITHUB_OUTPUT"
+
+      - name: Build distro packages (Depends, no CLI)
+        if: steps.gui.outcome == 'success'
+        env:
+          PACKAGE_FAMILY: deb
+          SKIP_NFPM: "0"
+          GUI_BIN: ${{ steps.gui.outputs.gui_bin }}
+          OUT_DIR: dist
+        run: |
+          set -euo pipefail
+          FETCH_CLI=0 bash packaging/build-linux-packages.sh
+
+      - name: Build portable tarball (bundle CLI)
+        if: steps.gui.outcome == 'success' && steps.cli.outcome == 'success'
+        env:
+          GUI_BIN: ${{ steps.gui.outputs.gui_bin }}
+          RATARMOUNT_CLI: ${{ steps.cli.outputs.cli_bin }}
+          FETCH_CLI: "0"
+          SKIP_BUILD: "1"
+          OUT_DIR: dist
+        run: bash packaging/build-linux-portable.sh
+
+      - name: Flatten artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p release
+          if [[ -d dist ]]; then
+            find dist -type f -size +0c \( \
+                -name '*.deb' -o -name '*.rpm' -o -name '*.tar.gz' \
+                -o -name '*.sha256' -o -name '*.msi' -o -name 'nfpm-*.yaml' \
+              \) -exec cp -v {} release/ \; || true
+          fi
+          cd release
+          ls -la || true
+          : > SHA256SUMS
+          for f in *.deb *.rpm *.tar.gz *.msi; do
+            [[ -f "$f" ]] || continue
+            sha256sum "$f" >> SHA256SUMS
+          done
+          if [[ ! -s SHA256SUMS ]]; then
+            rm -f SHA256SUMS
+          fi
+          # Write the list *outside* release/ so it cannot become an asset.
+          bash ../packaging/release-asset-filter.sh . > "$RUNNER_TEMP/upload-list.txt" || true
+          cat "$RUNNER_TEMP/upload-list.txt"
+          if grep -E 'dst: /usr/bin/ratarmount$' nfpm-deb.yaml 2>/dev/null; then
+            echo "::error::deb yaml ships /usr/bin/ratarmount"
+            exit 1
+          fi
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Cosign keyless sign (OIDC)
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+          COSIGN_YES: "true"
+        run: |
+          cd release
+          signed=0
+          for f in *.deb *.rpm *.tar.gz SHA256SUMS; do
+            [[ -f "$f" && -s "$f" ]] || continue
+            echo "Signing $f"
+            cosign sign-blob --yes --bundle "${f}.cosign.bundle" "$f"
+            signed=1
+          done
+          if [[ "$signed" -eq 0 ]]; then
+            echo "No binary artifacts to sign (GUI compile and/or engine CLI missing)."
+          fi
+
+      - name: Upload signed bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: signed-release-bundle
+          path: release/
+          if-no-files-found: warn
+
+      - name: Create GitHub Release (tags only, non-empty assets)
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          mapfile -t files < <(bash packaging/release-asset-filter.sh release)
+          upload=()
+          for f in "${files[@]}"; do
+            [[ -n "${f:-}" ]] || continue
+            [[ -f "release/$f" && -s "release/$f" ]] || continue
+            upload+=("$f")
+          done
+          if [[ "${#upload[@]}" -eq 0 ]]; then
+            echo "::notice::No non-empty artifacts to publish (GUI compile and/or engine CLI asset missing). Tests/dry-run still passed."
+            exit 0
+          fi
+          notes="$(mktemp)"
+          cat >"$notes" <<'MD'
+          ## ratarmount-gui packages
+
+          Distro `.deb`/`.rpm`: **Depends: ratarmount (>= pin)**; do not ship `/usr/bin/ratarmount`.
+          Portable tarball: bundles the version-matched `ratarmount` CLI next to the GUI.
+          List/extract still run in-process. FUSE is optional. No Electron/WebView.
+
+          Cosign keyless signatures (`.cosign.bundle`) when binary artifacts exist.
+          macOS notarize is skipped until `CODESIGN_IDENTITY` is configured (Right-click → Open).
+          MD
+          gh release create "$TAG" --title "ratarmount-gui $TAG" --notes-file "$notes" || \
+            gh release view "$TAG"
+          for f in "${upload[@]}"; do
+            gh release upload "$TAG" "release/$f" --clobber
+          done
