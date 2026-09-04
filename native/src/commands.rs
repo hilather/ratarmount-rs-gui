@@ -4,10 +4,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::types::EngineConfig;
+
 use crate::argv::{
     native_overwrite_for_launch, overwrite_wire, resolve_extract_dest, LaunchAction, LaunchIntent,
 };
-use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, page_names, sample_conflicts};
+use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, sample_conflicts};
 use crate::config::{
     apply_patch, clear_local_index_cache as wipe_local_index_cache, sanitize_config,
     write_config_file,
@@ -57,7 +59,8 @@ impl NativeApp {
             discard_secret(opts.password);
         }
         if opts.recreate == Recreate::Always {
-            let session_id = self.alloc_session(source);
+            let session_id = self.alloc_session(source.clone());
+            self.remember_recent_path(&source);
             let (job_id, _) = self.alloc_job(JobKind::Index, Some(session_id));
             self.emit(Event::IndexProgress {
                 job_id,
@@ -76,11 +79,14 @@ impl NativeApp {
             return Ok(OpenOutcome::Job { job_id });
         }
 
-        let session_id = self.alloc_session(source);
+        let session_id = self.alloc_session(source.clone());
+        self.remember_recent_path(&source);
         Ok(OpenOutcome::Session { session_id })
     }
 
     pub fn close(&mut self, session_id: u32) -> Result<()> {
+        self.fuse_mounts.remove(&session_id);
+        self.http_urls.remove(&session_id);
         self.sessions
             .remove(&session_id)
             .map(|_| ())
@@ -117,30 +123,29 @@ impl NativeApp {
 
     pub fn find(&self, opts: FindOpts) -> Result<FindPage> {
         let session = self.session(opts.session_id)?;
+        // TODO(engine): Session::find (G3). Fake catalog is the working paged stub.
         let mode = match opts.mode.as_str() {
             "glob" | "fts" => opts.mode.clone(),
             other => {
                 return Err(ApiError::internal(format!("unknown find mode '{other}'")));
             }
         };
-        let matches = session.catalog.find_matches(&opts.pattern, &mode);
         let key = format!("{}|{mode}", opts.pattern);
         let start = match opts.cursor.as_deref() {
             Some(cursor) => decode_cursor(cursor, &key)?,
             None => 0,
         };
         let limit = clamp_limit(opts.limit);
-        let names: Vec<String> = matches.iter().map(|e| e.path.clone()).collect();
-        let (entries, next) = page_names(&names, start, limit, |path| {
-            matches.iter().find(|e| e.path == path).cloned()
-        });
+        let (entries, next, total) = session
+            .catalog
+            .find_page(&opts.pattern, &mode, start, limit);
         let next_cursor = next.map(|idx| encode_cursor(&key, idx));
         Ok(FindPage {
             pattern: opts.pattern,
             mode,
             entries,
             next_cursor,
-            total_hint: Some(names.len() as i64),
+            total_hint: Some(total),
         })
     }
 
@@ -533,29 +538,85 @@ impl NativeApp {
         }
     }
 
-    pub fn fuse_mount(&self, session_id: u32) -> Result<FuseMountResult> {
-        let _ = self.session(session_id)?;
-        Ok(FuseMountResult::Error {
-            error: "FUSE is not available in the W1 stub".to_string(),
-        })
+    pub fn probe_features(&self) -> crate::types::FeatureProbe {
+        if let Some(over) = self.feature_probe_override {
+            return over;
+        }
+        if self.test_mode {
+            return crate::types::FeatureProbe {
+                fuse: false,
+                http: false,
+            };
+        }
+        let cli = resolve_cli_binary(&self.config.engine).is_some();
+        crate::types::FeatureProbe {
+            fuse: cli && fuse_runtime_available(),
+            http: cli,
+        }
     }
 
-    pub fn fuse_unmount(&self, session_id: u32) -> Result<()> {
+    pub fn fuse_mount(&mut self, session_id: u32) -> Result<FuseMountResult> {
         let _ = self.session(session_id)?;
+        if !self.probe_features().fuse {
+            return Ok(FuseMountResult::Error {
+                error: "FUSE is not available".to_string(),
+            });
+        }
+        if let Some(mountpoint) = self.fuse_mounts.get(&session_id) {
+            return Ok(FuseMountResult::Mountpoint {
+                mountpoint: mountpoint.clone(),
+            });
+        }
+        // TODO(engine): spawn bundled/PATH ratarmount, then xdg-open / open.
+        let mountpoint = format!("/tmp/rgui-fuse-{session_id}");
+        self.fuse_mounts.insert(session_id, mountpoint.clone());
+        Ok(FuseMountResult::Mountpoint { mountpoint })
+    }
+
+    pub fn fuse_unmount(&mut self, session_id: u32) -> Result<()> {
+        let _ = self.session(session_id)?;
+        self.fuse_mounts.remove(&session_id);
         Ok(())
     }
 
-    pub fn http_start(&self, session_id: u32, _bind: Option<String>) -> Result<String> {
+    pub fn http_start(&mut self, session_id: u32, bind: Option<String>) -> Result<String> {
         let _ = self.session(session_id)?;
-        Err(ApiError::new(
-            ErrorCode::UnsupportedFormat,
-            "HTTP share is not available in the W1 stub",
-        ))
+        if !self.probe_features().http {
+            return Err(ApiError::new(
+                ErrorCode::UnsupportedFormat,
+                "HTTP share is not available",
+            ));
+        }
+        if let Some(url) = self.http_urls.get(&session_id) {
+            return Ok(url.clone());
+        }
+        // TODO(engine G5.4): Session::start_http, else spawn `ratarmount --http --no-fuse`.
+        let url = match bind {
+            Some(bind) if !bind.is_empty() => format!("http://{bind}/"),
+            _ => format!("http://127.0.0.1:{}/", 18754 + session_id),
+        };
+        self.http_urls.insert(session_id, url.clone());
+        Ok(url)
     }
 
-    pub fn http_stop(&self, session_id: u32) -> Result<()> {
+    pub fn http_stop(&mut self, session_id: u32) -> Result<()> {
         let _ = self.session(session_id)?;
+        self.http_urls.remove(&session_id);
         Ok(())
+    }
+
+    pub(crate) fn remember_recent_path(&mut self, source: &str) {
+        if source.is_empty() {
+            return;
+        }
+        let mut paths = std::mem::take(&mut self.config.recent.paths);
+        paths.retain(|p| p != source && !p.is_empty());
+        paths.insert(0, source.to_string());
+        paths.truncate(crate::types::RECENT_MAX);
+        self.config.recent.paths = paths;
+        if let Some(persist) = &self.persist {
+            let _ = write_config_file(&persist.config_toml, &self.config);
+        }
     }
 
     fn can_open_source(&self, source: &str) -> bool {
@@ -582,6 +643,61 @@ impl NativeApp {
 pub enum FuseMountResult {
     Mountpoint { mountpoint: String },
     Error { error: String },
+}
+
+fn resolve_cli_binary(cfg: &EngineConfig) -> Option<PathBuf> {
+    if !cfg.cli_path.is_empty() {
+        let p = PathBuf::from(&cfg.cli_path);
+        if p.is_file() {
+            return Some(p);
+        }
+    }
+    if cfg.bundle_cli {
+        if let Ok(exe) = std::env::current_exe() {
+            if let Some(dir) = exe.parent() {
+                for name in ["ratarmount", "ratarmount.exe"] {
+                    let p = dir.join(name);
+                    if p.is_file() {
+                        return Some(p);
+                    }
+                }
+            }
+        }
+    }
+    if command_on_path("ratarmount") || command_on_path("ratarmount.exe") {
+        return Some(PathBuf::from("ratarmount"));
+    }
+    None
+}
+
+fn command_on_path(name: &str) -> bool {
+    let Some(path) = std::env::var_os("PATH") else {
+        return false;
+    };
+    for dir in std::env::split_paths(&path) {
+        if dir.join(name).is_file() {
+            return true;
+        }
+    }
+    false
+}
+
+fn fuse_runtime_available() -> bool {
+    if cfg!(windows) {
+        return false;
+    }
+    if cfg!(target_os = "linux") {
+        return Path::new("/dev/fuse").exists()
+            || command_on_path("fusermount3")
+            || command_on_path("fusermount");
+    }
+    if cfg!(target_os = "macos") {
+        return Path::new("/Library/Filesystems/macfuse.fs").exists()
+            || Path::new("/Library/Filesystems/osxfuse.fs").exists()
+            || Path::new("/dev/macfuse").exists()
+            || Path::new("/dev/fuse").exists();
+    }
+    Path::new("/dev/fuse").exists()
 }
 
 pub struct ExtractWork {

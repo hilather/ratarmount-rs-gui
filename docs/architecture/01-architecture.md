@@ -89,7 +89,7 @@ These are **buttons**, implemented by calling the engine — not by the UI prete
 | Share via HTTP | `Session::start_http(bind)` if G5.4 exists; else spawn `ratarmount --http --no-fuse…` |
 | Unmount / stop share | matching stop API or `ratarmount -u` |
 
-If the CLI binary is absent, hide those actions.
+If the CLI binary is absent, hide those actions. `probeFeatures()` returns `{ fuse, http }`; the toolbar omits the buttons when a flag is false. FUSE probe also fails without fuse3 / macFUSE. Engine G3 paged `find` is stubbed against the fake catalog (`TODO(engine)`). File-manager drops onto the window arrive as napi `fileDrop` (`startFileDropWatch`) on **Linux X11** only; GPUIX 0.6 has no React `onDrop`. Wayland/macOS/Windows: picker / argv / recent.
 
 ## Failure domains
 
@@ -98,7 +98,13 @@ If the CLI binary is absent, hide those actions.
 - Corrupt sidecar → `Recreate::IfInvalid`
 - Preview over cap → disable inline preview, offer extract
 - Encrypted archive → `BadPassword`; W4 password modal retries `open` (password not stored in React state/config)
-- Worker panic → surface error, drop that session, keep other tabs
+- Worker panic → surface error, drop that session, keep other tabs. Crash log (no passwords, no member names; parent dir 0700):
+
+| OS | Path |
+|---|---|
+| Linux | `${XDG_STATE_HOME:-$HOME/.local/state}/ratarmount-gui/crash.log` |
+| macOS | `~/Library/Logs/ratarmount-gui/crash.log` |
+| Windows | `%LOCALAPPDATA%\ratarmount-gui\crash.log` |
 
 ## Test seams
 

@@ -7,7 +7,7 @@ use crate::catalog::FakeCatalog;
 use crate::config::{load_config_or_default, PersistPaths};
 use crate::events::Event;
 use crate::parse::rgui_fake_enabled;
-use crate::types::{Config, IndexPolicy, Overwrite};
+use crate::types::{Config, FeatureProbe, IndexPolicy, Overwrite};
 
 #[derive(Debug)]
 pub struct SessionState {
@@ -84,6 +84,9 @@ pub struct NativeApp {
     pub(crate) last_index_debug_log: Option<String>,
     pub(crate) persist: Option<PersistPaths>,
     pub(crate) sibling_writable_override: Option<bool>,
+    pub(crate) feature_probe_override: Option<FeatureProbe>,
+    pub(crate) fuse_mounts: HashMap<u32, String>,
+    pub(crate) http_urls: HashMap<u32, String>,
 }
 
 impl NativeApp {
@@ -113,6 +116,9 @@ impl NativeApp {
             last_index_debug_log: None,
             persist: None,
             sibling_writable_override: None,
+            feature_probe_override: None,
+            fuse_mounts: HashMap::new(),
+            http_urls: HashMap::new(),
         };
         // napi production builds load the platform config. `cargo test` must not
         // read or write the developer's real config.toml / local-index-v1.
@@ -151,6 +157,11 @@ impl NativeApp {
     #[cfg(test)]
     pub fn set_sibling_writable(&mut self, writable: Option<bool>) {
         self.sibling_writable_override = writable;
+    }
+
+    #[cfg(test)]
+    pub fn set_feature_probe(&mut self, probe: Option<FeatureProbe>) {
+        self.feature_probe_override = probe;
     }
 
     pub fn sibling_dir_is_writable(&self, source: &str) -> bool {

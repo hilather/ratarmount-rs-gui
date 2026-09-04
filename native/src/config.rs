@@ -124,6 +124,14 @@ pub fn sanitize_config(cfg: &mut Config) -> bool {
         cfg.index.local_cache_bytes = 0;
         changed = true;
     }
+    let before = cfg.recent.paths.len();
+    cfg.recent.paths.retain(|p| !p.is_empty());
+    if cfg.recent.paths.len() > crate::types::RECENT_MAX {
+        cfg.recent.paths.truncate(crate::types::RECENT_MAX);
+    }
+    if cfg.recent.paths.len() != before {
+        changed = true;
+    }
     changed
 }
 
@@ -179,7 +187,9 @@ pub fn apply_patch(cfg: &mut Config, patch: ConfigPatch) -> Result<()> {
         }
     }
     if let Some(recent) = patch.recent {
-        if let Some(paths) = recent.paths {
+        if let Some(mut paths) = recent.paths {
+            paths.retain(|p| !p.is_empty());
+            paths.truncate(crate::types::RECENT_MAX);
             cfg.recent.paths = paths;
         }
     }

@@ -22,6 +22,35 @@ export interface DirPage {
   totalHint: number | null
 }
 
+export type FindMode = 'glob' | 'fts'
+
+export interface FindPage {
+  pattern: string
+  mode: FindMode
+  entries: DirEnt[]
+  nextCursor: Cursor | null
+  totalHint: number | null
+}
+
+export interface FindOpts {
+  sessionId: SessionId
+  pattern: string
+  mode: FindMode
+  cursor?: Cursor
+  limit?: number
+}
+
+export interface FeatureProbe {
+  fuse: boolean
+  http: boolean
+}
+
+export interface FileDropEvent {
+  paths: string[]
+}
+
+export const RECENT_MAX = 10
+
 export interface OpenOpts {
   source: string
   policy: IndexPolicy
@@ -238,6 +267,7 @@ export interface NativeAddon {
   close(sessionId: SessionId): Promise<void>
   list(opts: ListOpts): Promise<DirPage>
   lookup(opts: LookupOpts): Promise<DirEnt | null>
+  find(opts: FindOpts): Promise<FindPage>
   preview(opts: PreviewOpts): Promise<PreviewResult>
   extractPlan(opts: ExtractPlanOpts): Promise<ExtractPlan>
   extract(opts: ExtractOpts): Promise<{ jobId: JobId }>
@@ -249,10 +279,17 @@ export interface NativeAddon {
   applyLaunch(args: string[]): Promise<void>
   registerAssociations(): Promise<void>
   unregisterAssociations(): Promise<void>
+  probeFeatures(): Promise<FeatureProbe>
+  fuseMount(sessionId: SessionId): Promise<{ mountpoint: string } | { error: string }>
+  fuseUnmount(sessionId: SessionId): Promise<void>
+  httpStart(sessionId: SessionId, bind?: string): Promise<{ url: string }>
+  httpStop(sessionId: SessionId): Promise<void>
+  startFileDropWatch(): Promise<void>
   on(event: 'jobSucceeded', cb: (e: JobSucceededEvent) => void): void
   on(event: 'jobFailed', cb: (e: JobFailedEvent) => void): void
   on(event: 'jobCancelled', cb: (e: JobCancelledEvent) => void): void
   on(event: 'extractProgress', cb: (e: ExtractProgressEvent) => void): void
+  on(event: 'fileDrop', cb: (e: FileDropEvent) => void): void
 }
 
 function asNumber(value: unknown): number | null {
@@ -306,6 +343,41 @@ export function normalizeDirPage(raw: unknown): DirPage {
     nextCursor: next == null ? null : String(next),
     totalHint: hint,
   }
+}
+
+export function normalizeFindPage(raw: unknown): FindPage {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const next = pick<unknown>(obj, 'nextCursor', 'next_cursor')
+  const hint = asNumber(pick(obj, 'totalHint', 'total_hint'))
+  const entriesRaw = obj.entries
+  const entries = Array.isArray(entriesRaw) ? entriesRaw.map(normalizeDirEnt) : []
+  const modeRaw = String(obj.mode ?? 'fts')
+  const mode: FindMode = modeRaw === 'glob' ? 'glob' : 'fts'
+  return {
+    pattern: String(obj.pattern ?? ''),
+    mode,
+    entries,
+    nextCursor: next == null ? null : String(next),
+    totalHint: hint,
+  }
+}
+
+export function normalizeFeatureProbe(raw: unknown): FeatureProbe {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  return {
+    fuse: obj.fuse === true,
+    http: obj.http === true,
+  }
+}
+
+export function normalizeFuseMount(raw: unknown): { mountpoint: string } | { error: string } {
+  const obj = (raw ?? {}) as Record<string, unknown>
+  const mountpoint = pick<unknown>(obj, 'mountpoint', 'mountpoint')
+  const error = pick<unknown>(obj, 'error', 'error')
+  if (typeof mountpoint === 'string' && mountpoint.length > 0) {
+    return { mountpoint }
+  }
+  return { error: typeof error === 'string' && error.length > 0 ? error : 'FUSE is not available' }
 }
 
 export function normalizeOpenResult(raw: unknown): OpenResult {
@@ -416,14 +488,41 @@ export function normalizeConfig(raw: unknown): Config {
   const obj = (raw ?? {}) as Record<string, unknown>
   const extract = (pick(obj, 'extract', 'extract') ?? {}) as Record<string, unknown>
   const preview = (pick(obj, 'preview', 'preview') ?? {}) as Record<string, unknown>
+  const index = (pick(obj, 'index', 'index') ?? {}) as Record<string, unknown>
+  const engine = (pick(obj, 'engine', 'engine') ?? {}) as Record<string, unknown>
+  const recent = (pick(obj, 'recent', 'recent') ?? {}) as Record<string, unknown>
   const overwriteRaw = String(pick(extract, 'overwrite', 'overwrite') ?? 'ask')
   const overwrite: ConfigOverwrite =
     overwriteRaw === 'skip' || overwriteRaw === 'replace' || overwriteRaw === 'ask'
       ? overwriteRaw
       : 'ask'
   const defaults = defaultConfig()
+  const policyRaw = String(pick(index, 'policy', 'policy') ?? defaults.index.policy)
+  const policy: PersistablePolicy =
+    policyRaw === 'user-cache' || policyRaw === 'explicit' || policyRaw === 'temp' || policyRaw === 'sibling'
+      ? policyRaw
+      : defaults.index.policy
+  const recreateRaw = String(pick(index, 'recreate', 'recreate') ?? defaults.index.recreate)
+  const recreate: Recreate =
+    recreateRaw === 'never' || recreateRaw === 'always' || recreateRaw === 'if-invalid'
+      ? recreateRaw
+      : defaults.index.recreate
+  const recentPaths = asStringArray(pick(recent, 'paths', 'paths')).filter((p) => p.length > 0).slice(0, RECENT_MAX)
   return {
     ...defaults,
+    index: {
+      policy,
+      explicitPath: String(pick(index, 'explicitPath', 'explicit_path') ?? defaults.index.explicitPath),
+      extraDirs: asStringArray(pick(index, 'extraDirs', 'extra_dirs')),
+      recreate,
+      localCacheBytes:
+        asNumber(pick(index, 'localCacheBytes', 'local_cache_bytes')) ?? defaults.index.localCacheBytes,
+      rememberUnwritableVolumes: asBool(
+        pick(index, 'rememberUnwritableVolumes', 'remember_unwritable_volumes'),
+        defaults.index.rememberUnwritableVolumes,
+      ),
+      rememberedVolumes: asStringArray(pick(index, 'rememberedVolumes', 'remembered_volumes')),
+    },
     extract: {
       overwrite,
       allowUnsafePaths: Boolean(pick(extract, 'allowUnsafePaths', 'allow_unsafe_paths')),
@@ -431,6 +530,13 @@ export function normalizeConfig(raw: unknown): Config {
     preview: {
       maxBytes: asNumber(pick(preview, 'maxBytes', 'max_bytes')) ?? defaults.preview.maxBytes,
       openLargeWithSystem: pick(preview, 'openLargeWithSystem', 'open_large_with_system') !== false,
+    },
+    engine: {
+      bundleCli: pick(engine, 'bundleCli', 'bundle_cli') !== false,
+      cliPath: String(pick(engine, 'cliPath', 'cli_path') ?? ''),
+    },
+    recent: {
+      paths: recentPaths,
     },
   }
 }
@@ -506,6 +612,13 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
   const registerFn = maybeFn(raw, 'registerAssociations', 'register_associations')
   const unregisterFn = maybeFn(raw, 'unregisterAssociations', 'unregister_associations')
   const clearCacheFn = maybeFn(raw, 'clearLocalIndexCache', 'clear_local_index_cache')
+  const findFn = maybeFn(raw, 'find', 'find')
+  const probeFn = maybeFn(raw, 'probeFeatures', 'probe_features')
+  const fuseMountFn = maybeFn(raw, 'fuseMount', 'fuse_mount')
+  const fuseUnmountFn = maybeFn(raw, 'fuseUnmount', 'fuse_unmount')
+  const httpStartFn = maybeFn(raw, 'httpStart', 'http_start')
+  const httpStopFn = maybeFn(raw, 'httpStop', 'http_stop')
+  const startDropFn = maybeFn(raw, 'startFileDropWatch', 'start_file_drop_watch')
   const onFn = fn(raw, 'on', 'on')
 
   return {
@@ -550,6 +663,16 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
       try {
         const ent = await Promise.resolve(lookupFn(opts))
         return ent == null ? null : normalizeDirEnt(ent)
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async find(opts) {
+      if (!findFn) {
+        missing('find')
+      }
+      try {
+        return normalizeFindPage(await Promise.resolve(findFn(opts)))
       } catch (err) {
         throw commandErrorFromUnknown(err)
       }
@@ -654,6 +777,70 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
         throw commandErrorFromUnknown(err)
       }
     },
+    async probeFeatures() {
+      if (!probeFn) {
+        return { fuse: false, http: false }
+      }
+      try {
+        return normalizeFeatureProbe(await Promise.resolve(probeFn()))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async fuseMount(sessionId) {
+      if (!fuseMountFn) {
+        return { error: 'FUSE is not available' }
+      }
+      try {
+        return normalizeFuseMount(await Promise.resolve(fuseMountFn(sessionId)))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async fuseUnmount(sessionId) {
+      if (!fuseUnmountFn) {
+        return
+      }
+      try {
+        await Promise.resolve(fuseUnmountFn(sessionId))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async httpStart(sessionId, bind) {
+      if (!httpStartFn) {
+        throw new CommandError('UnsupportedFormat', 'HTTP share is not available', false)
+      }
+      try {
+        const rawResult = await Promise.resolve(httpStartFn(sessionId, bind))
+        if (rawResult && typeof rawResult === 'object' && 'url' in rawResult) {
+          return { url: String((rawResult as { url: unknown }).url) }
+        }
+        return { url: String(rawResult) }
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async httpStop(sessionId) {
+      if (!httpStopFn) {
+        return
+      }
+      try {
+        await Promise.resolve(httpStopFn(sessionId))
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
+    async startFileDropWatch() {
+      if (!startDropFn) {
+        return
+      }
+      try {
+        await Promise.resolve(startDropFn())
+      } catch (err) {
+        throw commandErrorFromUnknown(err)
+      }
+    },
     on(event, cb) {
       try {
         onFn(event, (payload: unknown) => {
@@ -671,6 +858,12 @@ export function wrapNativeModule(mod: unknown): NativeAddon {
           }
           if (event === 'extractProgress') {
             ;(cb as (e: ExtractProgressEvent) => void)(normalizeExtractProgress(payload))
+            return
+          }
+          if (event === 'fileDrop') {
+            const obj = (payload ?? {}) as Record<string, unknown>
+            const paths = Array.isArray(obj.paths) ? obj.paths.map((p) => String(p)) : []
+            ;(cb as (e: FileDropEvent) => void)({ paths })
           }
         })
       } catch (err) {

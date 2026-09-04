@@ -8,7 +8,10 @@ use crate::error::{ApiError, ErrorCode, Result};
 use crate::events::Event;
 use crate::paths::discard_secret;
 use crate::state::{JobKind, JobStatus, NativeApp};
-use crate::types::{DirPage, ExtractOpts, IndexPolicy, OpenOpts, OpenOutcome, Overwrite, Recreate};
+use crate::types::{
+    DirPage, ExtractOpts, FindOpts, FindPage, IndexPolicy, OpenOpts, OpenOutcome, Overwrite,
+    Recreate,
+};
 
 pub const INDEX_DEBUG_PREFIX: &str = "rgui: resolved index path: ";
 
@@ -115,6 +118,13 @@ impl EngineSession {
         let _ = path;
         // TODO(engine): lookup (G1.3).
         Err(engine_unavailable("lookup"))
+    }
+
+    #[allow(dead_code)]
+    pub fn find(&self, opts: &FindOpts) -> Result<FindPage> {
+        let _ = opts;
+        // TODO(engine): Session::find (G3.1/G3.2) — paged glob/FTS, never dump 2M hits.
+        Err(engine_unavailable("Session::find"))
     }
 
     #[allow(dead_code)]
@@ -280,6 +290,7 @@ pub fn open_real(app: &mut NativeApp, opts: OpenOpts) -> Result<OpenOutcome> {
         }
     };
     app.last_index_debug_log = Some(debug_log_resolved_index_path(&displayed));
+    app.remember_recent_path(&source);
 
     let mut request = OpenRequest {
         source,

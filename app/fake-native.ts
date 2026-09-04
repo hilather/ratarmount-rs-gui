@@ -3,6 +3,7 @@ import {
   CommandError,
   defaultConfig,
   PREVIEW_CEILING_BYTES,
+  RECENT_MAX,
   type Config,
   type ConfigPatch,
   type CacheClearResult,
@@ -10,6 +11,9 @@ import {
   type ExtractOpts,
   type ExtractPlan,
   type ExtractProgressEvent,
+  type FeatureProbe,
+  type FileDropEvent,
+  type FindOpts,
   type JobCancelledEvent,
   type JobFailedEvent,
   type JobSucceededEvent,
@@ -35,9 +39,11 @@ type JobSucceededListener = (event: JobSucceededEvent) => void
 type JobFailedListener = (event: JobFailedEvent) => void
 type JobCancelledListener = (event: JobCancelledEvent) => void
 type ExtractProgressListener = (event: ExtractProgressEvent) => void
+type FileDropListener = (event: FileDropEvent) => void
 
 export type FakeNative = NativeAddon & {
   listCalls: ListOpts[]
+  findCalls: FindOpts[]
   openCalls: OpenOpts[]
   closedSessions: number[]
   config: Config
@@ -50,9 +56,15 @@ export type FakeNative = NativeAddon & {
   unregisterCalls: number
   written: Map<string, Uint8Array>
   extractMode: 'ok' | 'hold' | 'busy' | 'path-escape'
+  features: FeatureProbe
+  siblingNotWritable: boolean
+  fuseMounts: Map<number, string>
+  httpUrls: Map<number, string>
   completeExtract(jobId: number): void
   failExtract(jobId: number, code: string, message: string, retryable: boolean): void
   emitExtractProgress(event: ExtractProgressEvent): void
+  emitFileDrop(paths: string[]): void
+  fileDropWatchStarted: number
 }
 
 export function createFakeNative(
@@ -64,13 +76,17 @@ export function createFakeNative(
     extractPlan?: Partial<ExtractPlan>
     config?: Partial<Config>
     extraFiles?: { parent: string; name: string; size: number; body?: string }[]
+    rootFileCount?: number
+    features?: FeatureProbe
+    siblingNotWritable?: boolean
   } = {},
 ): FakeNative {
   let nextSession = 1
   let nextJob = 1
   const sessions = new Map<number, string>()
-  const catalog = buildCatalog(options.extraFiles)
+  const catalog = buildCatalog(options.extraFiles, options.rootFileCount)
   const listCalls: ListOpts[] = []
+  const findCalls: FindOpts[] = []
   const openCalls: OpenOpts[] = []
   const closedSessions: number[] = []
   const extractCalls: ExtractOpts[] = []
@@ -80,14 +96,25 @@ export function createFakeNative(
   let registerCalls = 0
   let unregisterCalls = 0
   const written = new Map<string, Uint8Array>()
+  const fuseMounts = new Map<number, string>()
+  const httpUrls = new Map<number, string>()
   const succeeded: JobSucceededListener[] = []
   const failed: JobFailedListener[] = []
   const cancelled: JobCancelledListener[] = []
   const extractProgress: ExtractProgressListener[] = []
+  const fileDrop: FileDropListener[] = []
+  let fileDropWatchStarted = 0
   const heldJobs = new Set<number>()
   let cacheClears = 0
+  let features: FeatureProbe = options.features ?? { fuse: false, http: false }
+  let siblingNotWritable = options.siblingNotWritable === true
   let config: Config = {
     ...defaultConfig(),
+    ...options.config,
+    index: {
+      ...defaultConfig().index,
+      ...options.config?.index,
+    },
     extract: {
       overwrite: options.config?.extract?.overwrite ?? 'ask',
       allowUnsafePaths: options.config?.extract?.allowUnsafePaths ?? false,
@@ -96,10 +123,14 @@ export function createFakeNative(
       maxBytes: options.config?.preview?.maxBytes ?? PREVIEW_DEFAULT,
       openLargeWithSystem: options.config?.preview?.openLargeWithSystem ?? true,
     },
+    recent: {
+      paths: options.config?.recent?.paths ?? [],
+    },
   }
 
   const fake: FakeNative = {
     listCalls,
+    findCalls,
     openCalls,
     closedSessions,
     get config() {
@@ -120,6 +151,20 @@ export function createFakeNative(
     },
     written,
     extractMode: options.extractMode ?? 'ok',
+    get features() {
+      return features
+    },
+    set features(next: FeatureProbe) {
+      features = next
+    },
+    get siblingNotWritable() {
+      return siblingNotWritable
+    },
+    set siblingNotWritable(next: boolean) {
+      siblingNotWritable = next
+    },
+    fuseMounts,
+    httpUrls,
     completeExtract(jobId: number) {
       heldJobs.delete(jobId)
       for (const cb of extractProgress) {
@@ -140,6 +185,14 @@ export function createFakeNative(
         cb(event)
       }
     },
+    emitFileDrop(paths: string[]) {
+      for (const cb of fileDrop) {
+        cb({ paths })
+      }
+    },
+    get fileDropWatchStarted() {
+      return fileDropWatchStarted
+    },
     async pickFile() {
       return options.pickFile === undefined ? '/tmp/hello.tar' : options.pickFile
     },
@@ -148,6 +201,13 @@ export function createFakeNative(
     },
     async open(opts) {
       openCalls.push(opts)
+      if (siblingNotWritable && opts.policy === 'sibling') {
+        throw new CommandError(
+          'SiblingNotWritable',
+          'The directory next to the archive is not writable',
+          true,
+        )
+      }
       const mode = options.openMode ?? (opts.recreate === 'always' ? 'job' : 'session')
       if (mode === 'bad-password') {
         if (opts.password !== FAKE_ENCRYPTED_PASSWORD) {
@@ -157,6 +217,7 @@ export function createFakeNative(
       if (mode === 'session' || mode === 'bad-password') {
         const sessionId = nextSession++
         sessions.set(sessionId, opts.source)
+        rememberRecent(opts.source)
         return { sessionId }
       }
       const jobId = nextJob++
@@ -174,6 +235,7 @@ export function createFakeNative(
       }
       const sessionId = nextSession++
       sessions.set(sessionId, opts.source)
+      rememberRecent(opts.source)
       for (const cb of succeeded) {
         cb({ jobId, sessionId })
       }
@@ -183,6 +245,8 @@ export function createFakeNative(
       if (!sessions.delete(sessionId)) {
         throw new CommandError('NotFound', `session ${sessionId} is closed`, false)
       }
+      fuseMounts.delete(sessionId)
+      httpUrls.delete(sessionId)
       closedSessions.push(sessionId)
     },
     async list(opts) {
@@ -214,6 +278,24 @@ export function createFakeNative(
         throw new CommandError('NotFound', `session ${opts.sessionId} is closed`, false)
       }
       return catalog.entries.get(opts.path) ?? null
+    },
+    async find(opts) {
+      findCalls.push(opts)
+      if (!sessions.has(opts.sessionId)) {
+        throw new CommandError('NotFound', `session ${opts.sessionId} is closed`, false)
+      }
+      const mode = opts.mode === 'glob' ? 'glob' : 'fts'
+      const key = `${opts.pattern}|${mode}`
+      const start = decodeCursor(opts.cursor, key)
+      const limit = Math.min(opts.limit ?? LIST_LIMIT_DEFAULT, LIST_LIMIT_MAX)
+      const page = catalog.findPage(opts.pattern, mode, start, limit)
+      return {
+        pattern: opts.pattern,
+        mode,
+        entries: page.entries,
+        nextCursor: page.nextIndex == null ? null : encodeCursor(key, page.nextIndex),
+        totalHint: page.total,
+      }
     },
     async preview(opts) {
       previewCalls.push(opts)
@@ -335,60 +417,41 @@ export function createFakeNative(
       return config
     },
     async setConfig(patch: ConfigPatch) {
+      if (patch.index?.policy === 'memory') {
+        throw new CommandError('Internal', "config.index.policy cannot be 'memory'", false)
+      }
+      if (patch.extract?.overwrite != null) {
+        config.extract.overwrite = patch.extract.overwrite
+      }
+      if (patch.extract?.allowUnsafePaths != null) {
+        config.extract.allowUnsafePaths = patch.extract.allowUnsafePaths
+      }
+      if (patch.preview?.maxBytes != null) {
+        config.preview.maxBytes = Math.min(patch.preview.maxBytes, PREVIEW_CEILING_BYTES)
+      }
+      if (patch.preview?.openLargeWithSystem != null) {
+        config.preview.openLargeWithSystem = patch.preview.openLargeWithSystem
+      }
       if (patch.index) {
-        if (patch.index.policy === 'memory') {
-          throw new CommandError('Internal', "config.index.policy cannot be 'memory'", false)
-        }
-        if (patch.index.policy) {
-          config.index.policy = patch.index.policy
-        }
-        if (patch.index.explicitPath !== undefined) {
-          config.index.explicitPath = patch.index.explicitPath
-        }
-        if (patch.index.extraDirs) {
-          config.index.extraDirs = [...patch.index.extraDirs]
-        }
-        if (patch.index.recreate) {
-          config.index.recreate = patch.index.recreate
-        }
-        if (patch.index.localCacheBytes !== undefined) {
-          config.index.localCacheBytes = Math.max(0, patch.index.localCacheBytes)
-        }
-        if (patch.index.rememberUnwritableVolumes !== undefined) {
-          config.index.rememberUnwritableVolumes = patch.index.rememberUnwritableVolumes
-        }
-        if (patch.index.rememberedVolumes) {
-          config.index.rememberedVolumes = [...patch.index.rememberedVolumes]
-        }
-      }
-      if (patch.preview) {
-        if (patch.preview.maxBytes !== undefined) {
-          config.preview.maxBytes = Math.min(Math.max(0, patch.preview.maxBytes), PREVIEW_CEILING_BYTES)
-        }
-        if (patch.preview.openLargeWithSystem !== undefined) {
-          config.preview.openLargeWithSystem = patch.preview.openLargeWithSystem
-        }
-      }
-      if (patch.extract) {
-        if (patch.extract.overwrite) {
-          config.extract.overwrite = patch.extract.overwrite
-        }
-        if (patch.extract.allowUnsafePaths !== undefined) {
-          config.extract.allowUnsafePaths = patch.extract.allowUnsafePaths
-        }
-      }
-      if (patch.engine) {
-        if (patch.engine.bundleCli !== undefined) {
-          config.engine.bundleCli = patch.engine.bundleCli
-        }
-        if (patch.engine.cliPath !== undefined) {
-          config.engine.cliPath = patch.engine.cliPath
+        config = {
+          ...config,
+          index: {
+            ...config.index,
+            ...patch.index,
+            policy: patch.index.policy ?? config.index.policy,
+          },
         }
       }
       if (patch.recent?.paths) {
-        config.recent.paths = [...patch.recent.paths]
+        config = {
+          ...config,
+          recent: { paths: patch.recent.paths.filter((p) => p.length > 0).slice(0, RECENT_MAX) },
+        }
       }
-      return structuredClone(config)
+      if (patch.engine) {
+        config = { ...config, engine: { ...config.engine, ...patch.engine } }
+      }
+      return config
     },
     async clearLocalIndexCache(): Promise<CacheClearResult> {
       cacheClears += 1
@@ -428,6 +491,54 @@ export function createFakeNative(
     async unregisterAssociations() {
       unregisterCalls += 1
     },
+    async probeFeatures() {
+      return features
+    },
+    async fuseMount(sessionId) {
+      if (!sessions.has(sessionId)) {
+        throw new CommandError('NotFound', `session ${sessionId} is closed`, false)
+      }
+      if (!features.fuse) {
+        return { error: 'FUSE is not available' }
+      }
+      const existing = fuseMounts.get(sessionId)
+      if (existing) {
+        return { mountpoint: existing }
+      }
+      const mountpoint = `/tmp/rgui-fuse-${sessionId}`
+      fuseMounts.set(sessionId, mountpoint)
+      return { mountpoint }
+    },
+    async fuseUnmount(sessionId) {
+      if (!sessions.has(sessionId)) {
+        throw new CommandError('NotFound', `session ${sessionId} is closed`, false)
+      }
+      fuseMounts.delete(sessionId)
+    },
+    async httpStart(sessionId) {
+      if (!sessions.has(sessionId)) {
+        throw new CommandError('NotFound', `session ${sessionId} is closed`, false)
+      }
+      if (!features.http) {
+        throw new CommandError('UnsupportedFormat', 'HTTP share is not available', false)
+      }
+      const existing = httpUrls.get(sessionId)
+      if (existing) {
+        return { url: existing }
+      }
+      const url = `http://127.0.0.1:${18754 + sessionId}/`
+      httpUrls.set(sessionId, url)
+      return { url }
+    },
+    async httpStop(sessionId) {
+      if (!sessions.has(sessionId)) {
+        throw new CommandError('NotFound', `session ${sessionId} is closed`, false)
+      }
+      httpUrls.delete(sessionId)
+    },
+    async startFileDropWatch() {
+      fileDropWatchStarted += 1
+    },
     on(event, cb) {
       if (event === 'jobSucceeded') {
         succeeded.push(cb as JobSucceededListener)
@@ -443,9 +554,19 @@ export function createFakeNative(
       }
       if (event === 'extractProgress') {
         extractProgress.push(cb as ExtractProgressListener)
+        return
+      }
+      if (event === 'fileDrop') {
+        fileDrop.push(cb as FileDropListener)
       }
     },
   }
+  function rememberRecent(source: string): void {
+    const paths = config.recent.paths.filter((p) => p !== source && p.length > 0)
+    paths.unshift(source)
+    config = { ...config, recent: { paths: paths.slice(0, RECENT_MAX) } }
+  }
+
   return fake
 }
 
@@ -453,6 +574,12 @@ type Catalog = {
   entries: Map<string, DirEnt>
   children: Map<string, string[]>
   bodies: Map<string, string>
+  findPage(
+    pattern: string,
+    mode: 'glob' | 'fts',
+    start: number,
+    limit: number,
+  ): { entries: DirEnt[]; nextIndex: number | null; total: number }
 }
 
 function extractFiles(catalog: Catalog, members: string[]): DirEnt[] {
@@ -483,6 +610,7 @@ function extractFiles(catalog: Catalog, members: string[]): DirEnt[] {
 
 function buildCatalog(
   extraFiles: { parent: string; name: string; size: number; body?: string }[] = [],
+  rootFileCount = FAKE_ROOT_FILE_COUNT,
 ): Catalog {
   const entries = new Map<string, DirEnt>()
   const children = new Map<string, string[]>()
@@ -528,8 +656,9 @@ function buildCatalog(
   for (let i = 0; i < FAKE_ROOT_DIR_COUNT; i++) {
     addDirChild('/', `dir-${String(i).padStart(2, '0')}`)
   }
-  for (let i = 0; i < FAKE_ROOT_FILE_COUNT; i++) {
-    addFile('/', `file-${String(i).padStart(3, '0')}`, 100 + i)
+  const filePad = rootFileCount >= 1000 ? 6 : 3
+  for (let i = 0; i < rootFileCount; i++) {
+    addFile('/', `file-${String(i).padStart(filePad, '0')}`, 100 + i)
   }
   addFile('/dir-00', 'a.txt', 4, 'hi!\n')
   addFile('/dir-00', 'b.txt', 4, 'bb!\n')
@@ -537,7 +666,53 @@ function buildCatalog(
   for (const extra of extraFiles) {
     addFile(extra.parent, extra.name, extra.size, extra.body)
   }
-  return { entries, children, bodies }
+  return {
+    entries,
+    children,
+    bodies,
+    findPage(pattern, mode, start, limit) {
+      const out: DirEnt[] = []
+      let matched = 0
+      let nextIndex: number | null = null
+      for (const ent of entries.values()) {
+        if (ent.path === '/') {
+          continue
+        }
+        const hit =
+          mode === 'glob'
+            ? globMatch(pattern, ent.name) || globMatch(pattern, ent.path)
+            : ent.name.toLowerCase().includes(pattern.toLowerCase()) ||
+              ent.path.toLowerCase().includes(pattern.toLowerCase())
+        if (!hit) {
+          continue
+        }
+        if (matched >= start && out.length < limit) {
+          out.push(ent)
+        } else if (matched >= start + limit && nextIndex == null) {
+          nextIndex = start + limit
+        }
+        matched += 1
+      }
+      return { entries: out, nextIndex, total: matched }
+    },
+  }
+}
+
+function globMatch(pattern: string, text: string): boolean {
+  return globRec(pattern, text)
+}
+
+function globRec(pat: string, text: string): boolean {
+  if (pat.length === 0) {
+    return text.length === 0
+  }
+  if (pat[0] === '*') {
+    return globRec(pat.slice(1), text) || (text.length > 0 && globRec(pat, text.slice(1)))
+  }
+  if (pat[0] === '?') {
+    return text.length > 0 && globRec(pat.slice(1), text.slice(1))
+  }
+  return text[0] === pat[0] && globRec(pat.slice(1), text.slice(1))
 }
 
 function childPath(parent: string, name: string): string {

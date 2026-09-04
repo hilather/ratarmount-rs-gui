@@ -193,11 +193,22 @@ parseArgv(args: string[]): Promise<{
 /** Headless extract / index-only. `--silent` maps config ask → skip. Index-only always headless. */
 applyLaunch(args: string[]): Promise<void>
 
+/** Runtime probe. Hide Reveal-as-folder / Share-via-HTTP when the matching flag is false. */
+probeFeatures(): Promise<{ fuse: boolean; http: boolean }>
+// fuse: Unix + CLI present + fuse3/macFUSE. http: CLI present (G5.4 session HTTP later).
+// Test mode / missing CLI ⇒ both false. Do not dump 2M find hits; find is paged like list.
+
 fuseMount(sessionId: SessionId): Promise<{ mountpoint: string } | { error: string }>
 fuseUnmount(sessionId: SessionId): Promise<void>
 
 httpStart(sessionId: SessionId, bind?: string): Promise<{ url: string }>
 httpStop(sessionId: SessionId): Promise<void>
+
+/** OS file-drop onto the GPUIX window. GPUIX 0.6 has no React `onDrop`.
+ *  v1: Linux X11 only (XdndSelection + `_NET_WM_PID`, no-op `XSetErrorHandler`).
+ *  Wayland/macOS/Windows: no-op watcher. */
+startFileDropWatch(): Promise<void>
+on('fileDrop', (e: { paths: string[] }) => {})
 ```
 
 `preview` image path: native decodes and resizes to ≤ 2048px on the long edge **in Rust**, then returns a PNG no larger than `preview.maxBytes` (already clamped). If that cannot be done, `skipped`.

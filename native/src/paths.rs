@@ -6,6 +6,40 @@ pub fn fixture_hello_tar() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/hello.tar")
 }
 
+/// Crash log path. Parent dir should be created 0700; do not log member names.
+pub fn crash_log_path(
+    home: Option<PathBuf>,
+    xdg_state_home: Option<PathBuf>,
+    localappdata: Option<PathBuf>,
+    os: &str,
+) -> PathBuf {
+    match os {
+        "macos" => home
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("Library/Logs/ratarmount-gui/crash.log"),
+        "windows" => localappdata
+            .or(home)
+            .unwrap_or_else(|| PathBuf::from("."))
+            .join("ratarmount-gui")
+            .join("crash.log"),
+        _ => xdg_state_home
+            .unwrap_or_else(|| {
+                home.unwrap_or_else(|| PathBuf::from("."))
+                    .join(".local/state")
+            })
+            .join("ratarmount-gui/crash.log"),
+    }
+}
+
+pub fn platform_crash_log_path() -> PathBuf {
+    crash_log_path(
+        std::env::var_os("HOME").map(PathBuf::from),
+        std::env::var_os("XDG_STATE_HOME").map(PathBuf::from),
+        std::env::var_os("LOCALAPPDATA").map(PathBuf::from),
+        std::env::consts::OS,
+    )
+}
+
 pub fn is_fixture_source(source: &str) -> bool {
     let want = fixture_hello_tar();
     let got = Path::new(source);

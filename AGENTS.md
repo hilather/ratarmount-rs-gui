@@ -72,6 +72,7 @@ When you fix a **new** production bug, **add a row** here and ship the test in t
 | Last-page `nextCursor` omitted (W3 infinite list) | `cargo test -p native regression_last_page_next_cursor_is_null_not_omitted` |
 | Invalid TypeScript crashed `bun test` (exit 139) instead of failing tsc | `cd app && bun test ci-workflow.test.ts`; CI runs `bun run typecheck` before `bun test` |
 | Unused `PREVIEW_CEILING_BYTES` import failed clippy `-D warnings` | `cargo clippy -p native --all-targets -- -D warnings` |
+| X11 drop fires after pointer left our window | `cargo test -p native x11_drop_emits_only_when_pointer_still_over_us` |
 
 ## CI is mandatory
 
