@@ -120,9 +120,7 @@ Do **not** vendor a fake `ratarmount` binary in git. Cache downloads under `thir
 
 ### Native crate pin (W2)
 
-**Not pinned (2026-08-29).** Sibling engine `0.1.29` has no `ratarmount-session` crate and no `ratarmount-core::session`. `native/Cargo.toml` has a reserved `session` feature (`session = []`) and a commented git-tag sketch with `default-features = false`. Allowlist: none. Never enable `fuse` / `nfs` / `smb` / `http`. Do **not** import the `ratarmount` binary crate to reach `factory.rs`.
-
-When G0.2 lands, pin the chosen crate from the matching engine git tag (same `X.Y.Z` as the bundled CLI) and flip `session = ["dep:ratarmount-session"]` (or `ratarmount-core` with a `session` feature).
+Pinned to engine git tag **`v0.1.30`**: `ratarmount-session` with `default-features = false` and an empty extra allowlist. Native feature `session` is default-on. Never enable `fuse` / `nfs` / `smb` / `http-export`. Do **not** import the `ratarmount` binary crate. Packaging `engine-pin` may still read `0.1.29` until a follow-on CLI-asset bump.
 
 ### Honest W7 status
 

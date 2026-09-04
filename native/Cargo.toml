@@ -13,19 +13,27 @@ name = "native"
 path = "src/bin/native.rs"
 
 [features]
-default = []
+default = ["session"]
 # Compiles the napi-rs addon. Required for `napi build`; not needed for
 # `cargo test -p native` or `native --self-test` (those use the rlib API).
+# `napi build --features napi-addon` adds to defaults (includes `session`).
+# Do not pass `--no-default-features` for the production addon.
 napi-addon = ["dep:napi", "dep:napi-derive", "dep:rfd"]
-# Reserved Session path. Do not enable fuse/nfs/smb/http.
-session = []
+# Real Session path. Never enable fuse/nfs/smb/http-export here.
+session = ["dep:ratarmount-session", "dep:secrecy"]
 
 [dependencies]
 napi = { version = "=3.12.2", default-features = false, features = ["napi4", "dyn-symbols"], optional = true }
 napi-derive = { version = "=3.6.3", optional = true }
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"], optional = true }
-# TODO(engine): pin `ratarmount-session` from the engine git tag (G0.2).
-# ratarmount-session = { git = "https://github.com/hilather/ratarmount-rs", tag = "vX.Y.Z", default-features = false, optional = true }
+# Engine crates.io policy: session is unpublished; pin the v0.1.30 tag.
+# default-features = false → no formats-all. TAR/ZIP/7z + compress + compositing
+# + ratarmount-remote are always-on in the engine crate (vendored-openssl via ssh2).
+# Allowlist: (empty extras). Do not add formats-all, http-export, gzip-rapidgzip.
+ratarmount-session = { git = "https://github.com/hilather/ratarmount-rs", tag = "v0.1.30", default-features = false, optional = true }
+# Same caret as engine ratarmount-session (secrecy = "0.8"). Cargo.lock records the
+# exact checksum after the first fetch. Do not use "=0.8.0".
+secrecy = { version = "0.8", optional = true }
 
 [build-dependencies]
 napi-build = "=2.4.1"

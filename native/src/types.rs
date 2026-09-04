@@ -1,3 +1,5 @@
+use std::fmt;
+
 pub const LIST_LIMIT_DEFAULT: u32 = 200;
 pub const LIST_LIMIT_MAX: u32 = 500;
 pub const PREVIEW_DEFAULT_BYTES: i64 = 8 * 1024 * 1024;
@@ -237,6 +239,34 @@ pub struct OpenOpts {
     pub password: Option<String>,
     pub recursive: Option<bool>,
     pub recursion_depth: Option<u32>,
+}
+
+/// Adapter-level open request (extra dirs filled from config).
+#[derive(Clone)]
+pub struct OpenRequest {
+    pub source: String,
+    pub policy: IndexPolicy,
+    pub explicit_path: Option<String>,
+    pub extra_dirs: Vec<String>,
+    pub recursive: bool,
+    pub recursion_depth: Option<u32>,
+    pub recreate: Recreate,
+    pub password: Option<String>,
+}
+
+impl fmt::Debug for OpenRequest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("OpenRequest")
+            .field("source", &self.source)
+            .field("policy", &self.policy)
+            .field("explicit_path", &self.explicit_path)
+            .field("extra_dirs", &self.extra_dirs)
+            .field("recursive", &self.recursive)
+            .field("recursion_depth", &self.recursion_depth)
+            .field("recreate", &self.recreate)
+            .field("password", &self.password.as_ref().map(|_| "REDACTED"))
+            .finish()
+    }
 }
 
 #[derive(Clone, Debug)]

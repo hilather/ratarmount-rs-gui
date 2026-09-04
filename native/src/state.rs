@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::fmt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
@@ -7,17 +8,41 @@ use crate::catalog::FakeCatalog;
 use crate::config::{load_config_or_default, PersistPaths};
 use crate::events::Event;
 use crate::parse::rgui_fake_enabled;
-use crate::types::{Config, FeatureProbe, IndexPolicy, Overwrite};
+use crate::types::{Config, FeatureProbe, IndexPolicy, OpenRequest, Overwrite};
+
+pub enum SessionBackend {
+    Fake(FakeCatalog),
+    #[cfg(feature = "session")]
+    Engine(Arc<ratarmount_session::Session>),
+}
+
+impl fmt::Debug for SessionBackend {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fake(_) => write!(f, "Fake"),
+            #[cfg(feature = "session")]
+            Self::Engine(_) => write!(f, "Engine"),
+        }
+    }
+}
 
 #[derive(Debug)]
 pub struct SessionState {
     pub source: String,
-    pub catalog: FakeCatalog,
+    pub backend: SessionBackend,
 }
 
 impl SessionState {
     pub fn source(&self) -> &str {
         &self.source
+    }
+
+    pub fn fake_catalog(&self) -> Option<&FakeCatalog> {
+        match &self.backend {
+            SessionBackend::Fake(catalog) => Some(catalog),
+            #[cfg(feature = "session")]
+            SessionBackend::Engine(_) => None,
+        }
     }
 }
 
@@ -55,6 +80,7 @@ pub struct JobState {
     pub session_id: Option<u32>,
     pub cancel: Arc<AtomicBool>,
     pub pending_extract: Option<PendingExtract>,
+    pub pending_open: Option<OpenRequest>,
 }
 
 impl JobState {
@@ -155,6 +181,7 @@ impl NativeApp {
     }
 
     #[cfg(test)]
+    #[allow(dead_code)]
     pub fn set_sibling_writable(&mut self, writable: Option<bool>) {
         self.sibling_writable_override = writable;
     }
@@ -164,6 +191,7 @@ impl NativeApp {
         self.feature_probe_override = probe;
     }
 
+    #[allow(dead_code)]
     pub fn sibling_dir_is_writable(&self, source: &str) -> bool {
         if let Some(override_writable) = self.sibling_writable_override {
             return override_writable;
@@ -247,8 +275,40 @@ impl NativeApp {
     ) -> u32 {
         let id = self.next_session_id;
         self.next_session_id = self.next_session_id.saturating_add(1);
-        self.sessions.insert(id, SessionState { source, catalog });
+        self.sessions.insert(
+            id,
+            SessionState {
+                source,
+                backend: SessionBackend::Fake(catalog),
+            },
+        );
         id
+    }
+
+    #[cfg(feature = "session")]
+    pub(crate) fn alloc_session_engine(
+        &mut self,
+        source: String,
+        session: Arc<ratarmount_session::Session>,
+    ) -> u32 {
+        let id = self.next_session_id;
+        self.next_session_id = self.next_session_id.saturating_add(1);
+        self.sessions.insert(
+            id,
+            SessionState {
+                source,
+                backend: SessionBackend::Engine(session),
+            },
+        );
+        id
+    }
+
+    #[cfg(test)]
+    pub(crate) fn session_is_fake(&self, session_id: u32) -> bool {
+        matches!(
+            self.sessions.get(&session_id).map(|s| &s.backend),
+            Some(SessionBackend::Fake(_))
+        )
     }
 
     pub(crate) fn alloc_job(
@@ -267,9 +327,19 @@ impl NativeApp {
                 session_id,
                 cancel: cancel.clone(),
                 pending_extract: None,
+                pending_open: None,
             },
         );
         (id, cancel)
+    }
+
+    pub fn take_open_work(&mut self, job_id: u32) -> Option<(OpenRequest, Arc<AtomicBool>)> {
+        let job = self.jobs.get_mut(&job_id)?;
+        if job.status != JobStatus::Running {
+            return None;
+        }
+        let req = job.pending_open.take()?;
+        Some((req, job.cancel.clone()))
     }
 }
 

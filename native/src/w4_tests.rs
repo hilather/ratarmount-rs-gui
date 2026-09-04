@@ -275,6 +275,7 @@ fn read_range_and_extract_to_are_engine_todos() {
             members: vec!["/a.txt".into()],
             dest_dir: PathBuf::from("/tmp/out"),
             overwrite: Overwrite::Skip,
+            allow_unsafe_paths: false,
         },
     )
     .expect_err("extract_to");
@@ -295,7 +296,7 @@ fn read_range_and_extract_to_are_engine_todos() {
         extra_dirs: Vec::new(),
         recursive: false,
         recursion_depth: None,
-        recreate: Recreate::Never,
+        recreate: Recreate::IfInvalid,
         password: None,
     }) {
         Ok(session) => {

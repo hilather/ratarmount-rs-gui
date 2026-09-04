@@ -1,10 +1,8 @@
 # GUI embedder support — snapshot
 
-> **Working copy (2026-08-29):** the engine checkout has `docs/tasks/gui-embedder-support.md` (doc drop only; G0–G2 / `ratarmount-session` are still missing). Until that crate/API exists, GUI and engine agents treat **this snapshot** as the working G-list.
+> **Canonical (2026-09-04):** engine `ratarmount-rs` **v0.1.30** ships `ratarmount-session`. Treat **`ratarmount-rs/docs/tasks/gui-embedder-support.md`** and **`docs/session-api.md`** as the source of truth. This snapshot is historical (2026-08-29 G0 sketch). GUI production open/list/lookup/close/index use the crate; do not implement against this sketch.
 >
-> **Canonical once G0–G2 land:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` ([hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs)). That work is an **external engine PR**, not a GUI PR. After the crate exists, the engine file wins on drift.
->
-> Implement G0–G7 in **ratarmount-rs**. Do not paste GPUI / napi code into the engine repo. Canonical flips when the crate/API exists, not when the markdown file is present.
+> Implement remaining G-list items in **ratarmount-rs**. Do not paste GPUI / napi code into the engine repo.
 
 ---
 

@@ -7,7 +7,7 @@
 | **Date** | 2026-08-29 |
 | **Status** | Draft |
 | **Product** | `ratarmount-rs-gui` (spelling: **ratarmount-rs-gui**, not `ratarmout-rs-gui`) |
-| **Engine** | [hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs) workspace `0.1.29` snapshot |
+| **Engine** | [hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs) **v0.1.30** (`ratarmount-session`) |
 | **License** | MIT (same family as the engine; this project’s own 2026 copyright line) |
 | **Repo** | `ratarmount-rs-gui` (documentation seed; no application code in this pass) |
 | **Canonical copy** | This file. Scratch/skill copy: `/tmp/grok-brewerm/grok-design-doc-7e53b722.md` (keep in sync). |
@@ -20,11 +20,9 @@ This document synthesizes the planning pack at `/home/brewerm/Downloads/ratarmou
 
 `ratarmount-rs-gui` is a native GPU-rendered desktop archive explorer. The UI process is GPUIX (React reconciled onto Zed GPUI). Index, list, search, preview, and extract run in-process through a napi-rs cdylib that holds `ratarmount-session` (or `ratarmount-core::session` — engine G0.2). There is no Electron, no webview, and no GPUIX browser/Wasm target. Archive bytes, SQLite indexes, and members larger than the preview cap never enter the JavaScript heap as `Uint8Array` / Node `Buffer` / Bun `Blob`.
 
-The engine today is a CLI factory plus export adapters (`ratarmount/src/factory.rs` lives in the **binary** crate, `ratarmount-fuse`, `ratarmount-http`, …). Verified on 2026-08-29: there is **no** `ratarmount-session` crate, index build with structured progress is CLI-only (`ratarmount --no-mount -c`), and `find` is CLI + control socket. The GUI therefore depends on engine phases G0–G7.
+The engine ships `ratarmount-session` **0.1.30** (this GUI pins the git tag, `default-features = false`). Production open/list/lookup/close/index use `Session`. Extract / preview / find of real members follow in later PRs. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`. Do **not** import the `ratarmount` binary crate.
 
-**Working G-list:** `docs/engine/gui-embedder-support.md` in **this** repo. The engine checkout has `docs/tasks/gui-embedder-support.md` (doc drop as of 2026-08-29) but no `ratarmount-session` crate. Until G0–G2 land, GUI and engine agents use this snapshot; after the crate/API exists, the engine file is canonical.
-
-UI work can proceed against a fake in-memory catalog; it must not invent a second index format. Do **not** import the `ratarmount` binary crate to reach `factory.rs` — that is why W2 is gated on **G0** (crate home / factory extraction) as well as G1+G2.
+**Canonical G-list:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` and `docs/session-api.md`. The snapshot in `docs/engine/gui-embedder-support.md` is historical.
 
 ---
 
@@ -34,7 +32,7 @@ UI work can proceed against a fake in-memory catalog; it must not invent a secon
 
 | Claim | Evidence |
 |---|---|
-| Workspace crates, no session crate | Root `Cargo.toml` members: `ratarmount`, `ratarmount-core`, `ratarmount-index`, formats, compress, compositing, remote, fuse, http, nfs, smb, 9p, sftp, export-core. **No** `ratarmount-session`. |
+| Workspace crates + session crate | Engine **v0.1.30** includes `ratarmount-session`. GUI pins that tag. |
 | SQLite 0.7.x index | `ratarmount-index/src/lib.rs`: `INDEX_VERSION = "0.7.0"`; `create-index-tables.sql` is the 0.7.x `files` schema. Interoperable with Python ratarmountcore for TAR/ZIP/7z. |
 | Sibling sidecars | `{archive}.index.ptr` → `{archive}.index.{id}.sqlite`; well-known `{archive}.index.sqlite`. |
 | Remote sidecar cache | `$XDG_CACHE_HOME/ratarmount/meta-v3/`, cap `RATARMOUNT_META_CACHE_BYTES` default 256 MiB. **Exists.** `local-index-v1` for unwritable siblings **does not exist yet** (engine G4.3). |

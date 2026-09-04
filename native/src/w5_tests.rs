@@ -8,9 +8,10 @@ use crate::config::{
     LOCAL_INDEX_V1,
 };
 use crate::error::{ApiError, ErrorCode};
+use crate::events::Event;
 use crate::session::{
     engine_unavailable, index_location_hint, resolve_index, resolved_index_display,
-    unresolved_index_display, ResolvedIndex, INDEX_DEBUG_PREFIX,
+    session_feature_enabled, unresolved_index_display, ResolvedIndex, INDEX_DEBUG_PREFIX,
 };
 use crate::state::NativeApp;
 use crate::types::Config;
@@ -21,6 +22,8 @@ use crate::types::{
 
 /// 65 MiB — must clamp to 64 MiB in native.
 const SIXTY_FIVE_MIB: i64 = 65 * 1024 * 1024;
+
+static LOCAL_INDEX_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct TempTree(PathBuf);
 
@@ -297,26 +300,101 @@ fn cache_clear_refuses_non_local_index_v1_dir() {
     assert!(unsafe_dir.join("keep.sqlite").exists());
 }
 
+#[cfg(unix)]
 #[test]
 fn sibling_not_writable_is_retryable_structured_error() {
+    if !session_feature_enabled() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempTree::new("sibling-ro");
+    let tar = tmp.path().join("a.tar");
+    fs::copy(crate::paths::fixture_hello_tar(), &tar).unwrap();
+    let parent = tmp.path().to_path_buf();
+    let orig = fs::metadata(&parent).unwrap().permissions();
+    let orig_mode = orig.mode();
+    struct RestoreMode {
+        path: PathBuf,
+        mode: u32,
+    }
+    impl Drop for RestoreMode {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.mode));
+        }
+    }
+    let _restore = RestoreMode {
+        path: parent.clone(),
+        mode: orig_mode,
+    };
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = parent.join(".rgui-write-probe");
+    if fs::File::create(&probe).is_ok() {
+        let _ = fs::remove_file(&probe);
+        return;
+    }
+
     let mut app = NativeApp::production();
-    app.set_sibling_writable(Some(false));
-    let err = app
+    let outcome = app
         .open(OpenOpts {
-            source: fixture_source(),
+            source: tar.to_string_lossy().into_owned(),
             policy: IndexPolicy::Sibling,
             explicit_path: None,
-            recreate: Recreate::Never,
+            recreate: Recreate::IfInvalid,
             password: None,
             recursive: None,
             recursion_depth: None,
         })
-        .expect_err("sibling");
-    assert_eq!(err.code, ErrorCode::SiblingNotWritable);
-    assert!(err.retryable());
-    let shape = err.to_command_error();
-    assert_eq!(shape.code, "SiblingNotWritable");
-    assert!(shape.retryable);
+        .expect("if-invalid returns jobId");
+    let crate::types::OpenOutcome::Job { job_id } = outcome else {
+        panic!("IfInvalid must return Ok(Job), not a session");
+    };
+    let events = app.take_events();
+    assert!(
+        events.iter().any(|e| matches!(
+            e,
+            Event::JobFailed {
+                job_id: id,
+                code,
+                retryable,
+                ..
+            } if *id == job_id && code == "SiblingNotWritable" && *retryable
+        )),
+        "expected JobFailed SiblingNotWritable retryable, got {events:?}"
+    );
+    assert!(!events
+        .iter()
+        .any(|e| matches!(e, Event::JobSucceeded { .. })));
+}
+
+#[cfg(feature = "session")]
+#[test]
+fn map_engine_error_file_as_parent_may_be_sibling_not_writable() {
+    let tmp = TempTree::new("file-parent");
+    let parent_file = tmp.path().join("not-a-dir");
+    fs::write(&parent_file, b"x").unwrap();
+    // Archive path whose parent is a file — Session::open may error; GUI open_real
+    // would NotFound on is_file() first, so this is map_engine_error only.
+    let archive = parent_file.join("a.tar");
+    let err = match ratarmount_session::Session::open(ratarmount_session::OpenRequest {
+        source: ratarmount_session::SourceSpec::Path(archive),
+        index: ratarmount_session::IndexPolicy::Sibling,
+        explicit_index: None,
+        extra_dirs: Vec::new(),
+        password: None,
+        recursive: false,
+        recursion_depth: None,
+        recreate: ratarmount_session::Recreate::IfInvalid,
+    }) {
+        Ok(_) => panic!("file-as-parent should not open"),
+        Err(err) => err,
+    };
+    let mapped = crate::session::map_engine_error(err);
+    assert!(
+        mapped.code == ErrorCode::SiblingNotWritable
+            || mapped.code == ErrorCode::NotFound
+            || mapped.code == ErrorCode::Internal
+    );
 }
 
 #[test]
@@ -335,7 +413,44 @@ fn remembered_volume_switches_sibling_to_user_cache() {
         ..ConfigPatch::default()
     })
     .unwrap();
-    app.set_sibling_writable(Some(false));
+    assert_eq!(
+        app.effective_open_policy(IndexPolicy::Sibling, &source),
+        IndexPolicy::UserCache
+    );
+}
+
+#[test]
+fn remembered_volume_never_open_is_not_found_not_sibling() {
+    let tmp = TempTree::new("remember-open");
+    let _env_lock = LOCAL_INDEX_ENV_LOCK.lock().unwrap();
+    let cache_dir = tmp.path().join("local-index-v1");
+    fs::create_dir_all(&cache_dir).unwrap();
+    let prev = std::env::var_os("RATARMOUNT_LOCAL_INDEX_DIR");
+    std::env::set_var("RATARMOUNT_LOCAL_INDEX_DIR", &cache_dir);
+    struct RestoreEnv(Option<std::ffi::OsString>);
+    impl Drop for RestoreEnv {
+        fn drop(&mut self) {
+            match &self.0 {
+                Some(v) => std::env::set_var("RATARMOUNT_LOCAL_INDEX_DIR", v),
+                None => std::env::remove_var("RATARMOUNT_LOCAL_INDEX_DIR"),
+            }
+        }
+    }
+    let _env = RestoreEnv(prev);
+
+    let paths = tmp.persist();
+    let source = fixture_source();
+    let volume = volume_key_for_source(&source);
+    let mut app = NativeApp::with_persist(paths);
+    app.set_config(ConfigPatch {
+        index: Some(IndexConfigPatch {
+            remember_unwritable_volumes: Some(true),
+            remembered_volumes: Some(vec![volume]),
+            ..IndexConfigPatch::default()
+        }),
+        ..ConfigPatch::default()
+    })
+    .unwrap();
     assert_eq!(
         app.effective_open_policy(IndexPolicy::Sibling, &source),
         IndexPolicy::UserCache
@@ -354,12 +469,19 @@ fn remembered_volume_switches_sibling_to_user_cache() {
         .expect("index debug log")
         .to_string();
     assert!(log.starts_with(INDEX_DEBUG_PREFIX));
-    assert!(log.contains("user-cache"));
-    // `session` is an empty reserved feature; EngineSession::open is still TODO(engine).
-    let err = outcome.expect_err("engine still TODO after remap to user-cache");
+    assert!(
+        log.contains("user cache") || log.contains("user-cache"),
+        "log should mention user cache, got {log}"
+    );
+    let err = outcome.expect_err("Never + remapped UserCache + no cache entry");
     assert_ne!(err.code, ErrorCode::SiblingNotWritable);
-    assert_eq!(err.code, ErrorCode::Internal);
-    assert!(err.message.contains("TODO(engine)"));
+    if session_feature_enabled() {
+        assert_eq!(err.code, ErrorCode::NotFound);
+        assert!(!log.contains("TODO(engine)"));
+    } else {
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("TODO(engine)"));
+    }
 }
 
 #[test]
@@ -424,18 +546,39 @@ fn write_config_allows_password_substring_in_path_values() {
 
 #[test]
 fn resolve_index_is_engine_todo_and_does_not_invent_local_index_v1_keys() {
-    let err = resolve_index("/data/foo.tar", IndexPolicy::UserCache, None).unwrap_err();
-    assert_eq!(err.code, ErrorCode::Internal);
-    assert!(err.message.contains("TODO(engine)"));
-    assert!(err.message.contains("resolve_index"));
     let src = include_str!("session.rs");
-    assert!(src.contains("TODO(engine G4)"));
     assert!(!src.contains("sha256("));
     let hint = index_location_hint(IndexPolicy::UserCache, "/data/foo.tar", None);
     assert_eq!(hint, "user cache");
     assert!(!hint.contains("local-index-v1"));
     let unresolved = unresolved_index_display(IndexPolicy::UserCache, "/data/foo.tar", None);
     assert!(!unresolved.contains("local-index-v1"));
+    if session_feature_enabled() {
+        let _env_lock = LOCAL_INDEX_ENV_LOCK.lock().unwrap();
+        let tmp = TempTree::new("resolve");
+        let cache_dir = tmp.path().join("local-index-v1");
+        fs::create_dir_all(&cache_dir).unwrap();
+        let prev = std::env::var_os("RATARMOUNT_LOCAL_INDEX_DIR");
+        std::env::set_var("RATARMOUNT_LOCAL_INDEX_DIR", &cache_dir);
+        let resolved = resolve_index("/data/foo.tar", IndexPolicy::UserCache, None, &[], false);
+        match prev {
+            Some(v) => std::env::set_var("RATARMOUNT_LOCAL_INDEX_DIR", v),
+            None => std::env::remove_var("RATARMOUNT_LOCAL_INDEX_DIR"),
+        }
+        let loc = resolved.expect("engine resolve_index");
+        assert!(
+            loc.display.contains("local-index-v1") || loc.display.contains("user cache"),
+            "{}",
+            loc.display
+        );
+        assert!(!src.contains("TODO(engine G4)"));
+    } else {
+        let err =
+            resolve_index("/data/foo.tar", IndexPolicy::UserCache, None, &[], false).unwrap_err();
+        assert_eq!(err.code, ErrorCode::Internal);
+        assert!(err.message.contains("TODO(engine)"));
+        assert!(err.message.contains("resolve_index"));
+    }
 }
 
 #[test]

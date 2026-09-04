@@ -32,6 +32,18 @@ use crate::types::{
 
 impl NativeApp {
     pub fn open(&mut self, opts: OpenOpts) -> Result<OpenOutcome> {
+        self.open_with_index_mode(opts, true)
+    }
+
+    pub fn open_defer_index_job(&mut self, opts: OpenOpts) -> Result<OpenOutcome> {
+        self.open_with_index_mode(opts, false)
+    }
+
+    fn open_with_index_mode(
+        &mut self,
+        opts: OpenOpts,
+        run_index_inline: bool,
+    ) -> Result<OpenOutcome> {
         if opts.policy == IndexPolicy::Memory && !self.fake_or_test() {
             discard_secret(opts.password);
             return Err(ApiError::internal(
@@ -39,7 +51,11 @@ impl NativeApp {
             ));
         }
         if !self.fake_or_test() {
-            return crate::session::open_real(self, opts);
+            return if run_index_inline {
+                crate::session::open_real(self, opts)
+            } else {
+                crate::session::open_real_defer_index_job(self, opts)
+            };
         }
         if !self.can_open_source(&opts.source) {
             discard_secret(opts.password);
@@ -96,33 +112,21 @@ impl NativeApp {
     pub fn list(&self, opts: ListOpts) -> Result<DirPage> {
         let session = self.session(opts.session_id)?;
         let path = normalize_archive_path(&opts.path)?;
-        if session.catalog.get(&path).is_none() {
-            return Err(ApiError::not_found(format!("path not found: {path}")));
-        }
-        let start = match opts.cursor.as_deref() {
-            Some(cursor) => decode_cursor(cursor, &path)?,
-            None => 0,
-        };
-        let limit = clamp_limit(opts.limit);
-        let total = session.catalog.child_names(&path).len() as i64;
-        let (entries, next) = session.catalog.list_slice(&path, start, limit);
-        let next_cursor = next.map(|idx| encode_cursor(&path, idx));
-        Ok(DirPage {
-            path,
-            entries,
-            next_cursor,
-            total_hint: Some(total),
-        })
+        let limit = clamp_limit(opts.limit) as u32;
+        crate::session::list_backend(&session.backend, &path, opts.cursor.as_deref(), limit)
     }
 
     pub fn lookup(&self, session_id: u32, path: &str) -> Result<Option<DirEnt>> {
         let session = self.session(session_id)?;
         let path = normalize_archive_path(path)?;
-        Ok(session.catalog.get(&path).cloned())
+        crate::session::lookup_backend(&session.backend, &path)
     }
 
     pub fn find(&self, opts: FindOpts) -> Result<FindPage> {
         let session = self.session(opts.session_id)?;
+        let catalog = session
+            .fake_catalog()
+            .ok_or_else(|| crate::session::engine_unavailable("Session::find"))?;
         // TODO(engine): Session::find (G3). Fake catalog is the working paged stub.
         let mode = match opts.mode.as_str() {
             "glob" | "fts" => opts.mode.clone(),
@@ -136,9 +140,7 @@ impl NativeApp {
             None => 0,
         };
         let limit = clamp_limit(opts.limit);
-        let (entries, next, total) = session
-            .catalog
-            .find_page(&opts.pattern, &mode, start, limit);
+        let (entries, next, total) = catalog.find_page(&opts.pattern, &mode, start, limit);
         let next_cursor = next.map(|idx| encode_cursor(&key, idx));
         Ok(FindPage {
             pattern: opts.pattern,
@@ -151,9 +153,12 @@ impl NativeApp {
 
     pub fn preview(&self, session_id: u32, path: &str) -> Result<PreviewKind> {
         let session = self.session(session_id)?;
+        let catalog = session
+            .fake_catalog()
+            .ok_or_else(|| crate::session::engine_unavailable("read_range"))?;
         let path = normalize_archive_path(path)?;
         let cap = self.config.preview.max_bytes;
-        match session.catalog.get(&path) {
+        match catalog.get(&path) {
             None => Err(ApiError::not_found(format!("path not found: {path}"))),
             Some(ent) if ent.is_dir => Ok(PreviewKind::Skipped {
                 reason: "unknown".to_string(),
@@ -161,7 +166,7 @@ impl NativeApp {
             Some(ent) if ent.size > cap => Ok(PreviewKind::Skipped {
                 reason: "too-large".to_string(),
             }),
-            Some(ent) => match session.catalog.body(&path) {
+            Some(ent) => match catalog.body(&path) {
                 None => {
                     if !self.fake_or_test() {
                         return Err(crate::session::engine_unavailable("read_range"));
@@ -190,12 +195,15 @@ impl NativeApp {
 
     pub fn extract_plan(&self, opts: ExtractPlanOpts) -> Result<ExtractPlan> {
         let session = self.session(opts.session_id)?;
+        let catalog = session
+            .fake_catalog()
+            .ok_or_else(|| crate::session::engine_unavailable("extract_to"))?;
         let allow_dotdot = self.config.extract.allow_unsafe_paths;
         for member in &opts.members {
             let _ = normalize_member_path(member, allow_dotdot)?;
         }
-        let (files, bytes) = session.catalog.totals(&opts.members);
-        let listed = session.catalog.extract_files(&opts.members);
+        let (files, bytes) = catalog.totals(&opts.members);
+        let listed = catalog.extract_files(&opts.members);
         let (conflicts, truncated, conflict_count) = if opts.dest_dir == STUB_CONFLICTS_DEST {
             let all: Vec<ExtractConflict> = (0..80)
                 .map(|i| ExtractConflict {
@@ -277,13 +285,15 @@ impl NativeApp {
         let dest_root = PathBuf::from(&opts.dest_dir);
         let items = {
             let session = self.session(session_id)?;
-            let files = session.catalog.extract_files(&opts.members);
+            let catalog = session
+                .fake_catalog()
+                .ok_or_else(|| crate::session::engine_unavailable("extract_to"))?;
+            let files = catalog.extract_files(&opts.members);
             let mut items = Vec::with_capacity(files.len());
             for file in files {
                 match member_dest_path(&dest_root, &file.path) {
                     Ok(dest) => {
-                        let body = session
-                            .catalog
+                        let body = catalog
                             .body(&file.path)
                             .map(|b| b.to_vec())
                             .unwrap_or_else(|| format!("rgui-fake:{}\n", file.path).into_bytes());

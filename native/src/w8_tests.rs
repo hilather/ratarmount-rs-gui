@@ -132,7 +132,7 @@ fn production_open_records_recent_path() {
         source: source.clone(),
         policy: IndexPolicy::Sibling,
         explicit_path: None,
-        recreate: Recreate::IfInvalid,
+        recreate: Recreate::Never,
         password: None,
         recursive: None,
         recursion_depth: None,

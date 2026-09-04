@@ -348,6 +348,29 @@ fn index_only_opens_and_closes() {
     assert!(!app.has_session(1));
 }
 
+#[test]
+fn production_index_only_leaves_sidecar_and_drops_handle() {
+    if !crate::session::session_feature_enabled() {
+        return;
+    }
+    let tmp = TempTree::new("prod-index-only");
+    let archive = tmp.path().join("hello.tar");
+    fs::copy(fixture_hello_tar(), &archive).unwrap();
+    let intent = parse_argv(["--index-only", archive.to_string_lossy().as_ref()]).unwrap();
+    let mut app = NativeApp::production();
+    app.apply_launch(&intent, || None)
+        .expect("production --index-only");
+    assert!(!app.has_session(1));
+    let sidecar = fs::read_dir(tmp.path())
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().contains(".index"));
+    assert!(
+        sidecar,
+        "index-only must leave a 0.7.x sidecar next to the archive"
+    );
+}
+
 const ARGV_VECTORS: &str = include_str!("../tests/argv-vectors.txt");
 
 struct ArgvVector {

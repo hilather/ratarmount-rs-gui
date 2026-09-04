@@ -81,7 +81,7 @@ Verified in `ratarmount-index/src/location.rs`. Last resort is **`:memory:`**, n
 
 `local-index-v1/` does **not** exist yet. If W2 writes sha256 keys there before G4, the CLI will not find them.
 
-W2 (2026-08-29) does **not** call `resolve_index_location` yet (`ratarmount-session` / G4 are missing). Native logs `rgui: resolved index path: (unresolved; TODO(engine) resolve_index / resolve_index_location) …` and does not invent sidecar names.
+Production `open` does **not** preflight `resolve_index` as a gate. `Session::open` resolves the sidecar. After a successful Sibling / UserCache / Explicit open, native may call `resolve_index(..., extra_dirs, recreate=false)` for the debug/status line only; Temp / Memory never call the helper. Native does not invent sidecar names or `local-index-v1` sha256 keys.
 
 ### Post-G4 target (engine `resolve_index`; GUI consumes it, does not reimplement)
 
@@ -137,7 +137,7 @@ paths = []                         # W8; archive paths only, never passwords
 
 Native loads this file on startup (`getConfig` / `setConfig` persist it). `policy = "memory"` is coerced to `sibling` and never written back. `preview.max_bytes` is clamped to **64 MiB** on load and save. Passwords are ignored if present and never written.
 
-Until engine G4, `resolve_index` is `TODO(engine)` in this repo. The GUI does **not** invent `local-index-v1` sha256 keys. `SiblingNotWritable` is raised from a native sibling-dir writability probe (retryable). Remember-volume stores archive parent paths in `remembered_volumes`; a later G4 helper should replace that keying.
+The GUI does **not** invent `local-index-v1` sha256 keys. `SiblingNotWritable` is mapped from `Session::open` / `open_with_job` only (retryable). Native no longer probes sibling-dir writability itself. Remember-volume remaps `Sibling → UserCache` before open; `Recreate::Never` + remapped UserCache + no cache entry is `NotFound`, not `SiblingNotWritable`.
 
 ## Privacy / multi-user
 
