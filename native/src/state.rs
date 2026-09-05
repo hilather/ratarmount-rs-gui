@@ -36,14 +36,6 @@ impl SessionState {
     pub fn source(&self) -> &str {
         &self.source
     }
-
-    pub fn fake_catalog(&self) -> Option<&FakeCatalog> {
-        match &self.backend {
-            SessionBackend::Fake(catalog) => Some(catalog),
-            #[cfg(feature = "session")]
-            SessionBackend::Engine(_) => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
