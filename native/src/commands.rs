@@ -1,7 +1,7 @@
 #[cfg(feature = "session")]
 use std::cell::RefCell;
 #[cfg(feature = "session")]
-use std::collections::VecDeque;
+use std::collections::{BTreeSet, VecDeque};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -337,6 +337,7 @@ impl NativeApp {
     pub fn take_extract_work(&mut self, job_id: u32) -> Option<ExtractWork> {
         let job = self.jobs.get_mut(&job_id)?;
         if job.status != JobStatus::Running {
+            job.pending_extract = None;
             return None;
         }
         let pending = job.pending_extract.take()?;
@@ -459,6 +460,7 @@ impl NativeApp {
             }
         };
         self.discard_pending_open(job_id);
+        self.discard_pending_extract(job_id);
         if running {
             self.emit(Event::JobCancelled { job_id });
         }
@@ -983,16 +985,16 @@ fn drive_engine_extract(
     let fail = |err: ApiError| {
         (on_step.borrow_mut())(ExtractStep::Failed(err));
     };
-    if cancel.load(Ordering::SeqCst) {
-        (on_step.borrow_mut())(ExtractStep::Cancelled);
-        return;
-    }
     let extract_all = members.is_empty();
     let members = if extract_all {
         Vec::new()
     } else {
-        match expand_engine_members(&session, &members) {
+        match expand_engine_members(&session, &members, allow_unsafe_paths, cancel) {
             Ok(files) => files,
+            Err(err) if err.code == ErrorCode::Cancelled => {
+                (on_step.borrow_mut())(ExtractStep::Cancelled);
+                return;
+            }
             Err(err) => {
                 fail(err);
                 return;
@@ -1034,18 +1036,32 @@ fn drive_engine_extract(
 fn expand_engine_members(
     session: &ratarmount_session::Session,
     members: &[String],
+    allow_unsafe_paths: bool,
+    cancel: &AtomicBool,
 ) -> Result<Vec<String>> {
     let mut files = Vec::new();
+    let mut seen = BTreeSet::new();
     let mut dirs = VecDeque::new();
+    let mut seen_dirs = BTreeSet::new();
+    if cancel.load(Ordering::SeqCst) {
+        return Err(ApiError::new(ErrorCode::Cancelled, "cancelled"));
+    }
     for member in members {
-        let path = normalize_archive_path(member)?;
+        let path = normalize_member_path(member, allow_unsafe_paths)?;
         match session
             .lookup(&path)
             .map_err(crate::session::map_engine_error)?
         {
             None => {}
-            Some(ent) if ent.is_dir => dirs.push_back(path),
+            Some(ent) if ent.is_dir => {
+                if seen_dirs.insert(path.clone()) {
+                    dirs.push_back(path);
+                }
+            }
             Some(_) => {
+                if !seen.insert(path.clone()) {
+                    continue;
+                }
                 files.push(path);
                 if files.len() > EXTRACT_EXPAND_MAX_FILES {
                     return Err(ApiError::internal("selection too large to expand"));
@@ -1054,15 +1070,23 @@ fn expand_engine_members(
         }
     }
     while let Some(dir) = dirs.pop_front() {
+        if cancel.load(Ordering::SeqCst) {
+            return Err(ApiError::new(ErrorCode::Cancelled, "cancelled"));
+        }
         let mut cursor = ratarmount_session::DirCursor::Start;
         loop {
+            if cancel.load(Ordering::SeqCst) {
+                return Err(ApiError::new(ErrorCode::Cancelled, "cancelled"));
+            }
             let page = session
                 .list_dirents_page(&dir, cursor, LIST_LIMIT_MAX)
                 .map_err(crate::session::map_engine_error)?;
             for ent in page.entries {
                 if ent.is_dir {
-                    dirs.push_back(ent.path);
-                } else {
+                    if seen_dirs.insert(ent.path.clone()) {
+                        dirs.push_back(ent.path);
+                    }
+                } else if seen.insert(ent.path.clone()) {
                     files.push(ent.path);
                     if files.len() > EXTRACT_EXPAND_MAX_FILES {
                         return Err(ApiError::internal("selection too large to expand"));
@@ -1090,22 +1114,30 @@ fn engine_extract_plan(
     let mut bytes = 0_i64;
     let mut conflict_count = 0_i64;
     let mut conflicts = Vec::new();
-    let mut truncated = false;
+    let mut sample_full = false;
+    let mut scan_capped = false;
     let mut visited = 0usize;
+    let mut seen = BTreeSet::new();
     let mut dirs = VecDeque::new();
+    let mut seen_dirs = BTreeSet::new();
     let mut selected_files: Vec<(String, i64)> = Vec::new();
 
     if members.is_empty() {
         dirs.push_back("/".to_string());
+        seen_dirs.insert("/".to_string());
     } else {
         for member in members {
-            let path = normalize_archive_path(member)?;
+            let path = normalize_member_path(member, allow_unsafe_paths)?;
             match session
                 .lookup(&path)
                 .map_err(crate::session::map_engine_error)?
             {
                 None => {}
-                Some(ent) if ent.is_dir => dirs.push_back(path),
+                Some(ent) if ent.is_dir => {
+                    if seen_dirs.insert(path.clone()) {
+                        dirs.push_back(path);
+                    }
+                }
                 Some(ent) => selected_files.push((path, crate::session::saturate_i64(ent.size))),
             }
         }
@@ -1113,44 +1145,47 @@ fn engine_extract_plan(
 
     let timed_out = || start.elapsed().as_millis() as u64 >= EXTRACT_PLAN_CONFLICT_SCAN_MS;
 
-    let mut consider_file = |path: &str, size: i64| {
+    let mut consider_file = |path: String, size: i64| {
         if visited >= EXTRACT_PLAN_CONFLICT_SCAN_ROWS || timed_out() {
-            truncated = true;
+            scan_capped = true;
             return false;
         }
         visited += 1;
+        if !seen.insert(path.clone()) {
+            return true;
+        }
         files += 1;
         bytes += size;
-        if let Some(dest) = plan_member_dest(dest_root, path, allow_unsafe_paths) {
+        if let Some(dest) = plan_member_dest(dest_root, &path, allow_unsafe_paths) {
             if dest.exists() {
                 conflict_count += 1;
                 if conflicts.len() < EXTRACT_PLAN_CONFLICT_SAMPLE {
                     conflicts.push(ExtractConflict {
-                        member: path.to_string(),
+                        member: path,
                         dest_path: dest.to_string_lossy().into_owned(),
                     });
                 } else {
-                    truncated = true;
+                    sample_full = true;
                 }
             }
         }
         true
     };
 
-    for (path, size) in &selected_files {
-        if !consider_file(path, *size) {
+    for (path, size) in selected_files {
+        if !consider_file(path, size) {
             break;
         }
     }
 
     while let Some(dir) = dirs.pop_front() {
-        if truncated {
+        if scan_capped {
             break;
         }
         let mut cursor = ratarmount_session::DirCursor::Start;
         loop {
-            if truncated || timed_out() {
-                truncated = true;
+            if scan_capped || timed_out() {
+                scan_capped = true;
                 break;
             }
             let page = session
@@ -1158,12 +1193,17 @@ fn engine_extract_plan(
                 .map_err(crate::session::map_engine_error)?;
             for ent in page.entries {
                 if visited >= EXTRACT_PLAN_CONFLICT_SCAN_ROWS || timed_out() {
-                    truncated = true;
+                    scan_capped = true;
                     break;
                 }
                 visited += 1;
                 if ent.is_dir {
-                    dirs.push_back(ent.path);
+                    if seen_dirs.insert(ent.path.clone()) {
+                        dirs.push_back(ent.path);
+                    }
+                    continue;
+                }
+                if !seen.insert(ent.path.clone()) {
                     continue;
                 }
                 files += 1;
@@ -1177,12 +1217,12 @@ fn engine_extract_plan(
                                 dest_path: dest.to_string_lossy().into_owned(),
                             });
                         } else {
-                            truncated = true;
+                            sample_full = true;
                         }
                     }
                 }
             }
-            if truncated {
+            if scan_capped {
                 break;
             }
             match page.next_cursor {
@@ -1198,7 +1238,7 @@ fn engine_extract_plan(
         bytes,
         conflict_count,
         conflicts,
-        conflicts_truncated: truncated,
+        conflicts_truncated: sample_full || scan_capped,
     })
 }
 

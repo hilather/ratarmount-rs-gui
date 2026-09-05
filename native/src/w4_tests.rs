@@ -11,10 +11,11 @@ use crate::paths::{is_encrypted_source, member_dest_path};
 use crate::session::{
     engine_unavailable, extract_to, session_feature_enabled, EngineSession, ExtractRequest,
 };
-use crate::state::{JobKind, NativeApp, PendingExtract};
+use crate::state::{JobKind, JobStatus, NativeApp, PendingExtract};
 use crate::types::{
-    ExtractOpts, ExtractPlanOpts, OpenOpts, OpenOutcome, Overwrite, PreviewKind, Recreate,
-    EXTRACT_PLAN_CONFLICT_SAMPLE, FAKE_ENCRYPTED_PASSWORD, PREVIEW_DEFAULT_BYTES, STUB_HOLD_DEST,
+    ConfigPatch, ExtractConfigPatch, ExtractOpts, ExtractPlanOpts, OpenOpts, OpenOutcome,
+    Overwrite, PreviewKind, Recreate, EXTRACT_PLAN_CONFLICT_SAMPLE, FAKE_ENCRYPTED_PASSWORD,
+    PREVIEW_DEFAULT_BYTES, STUB_HOLD_DEST,
 };
 use crate::ustar_fixture::{
     member_body, member_name, ustar_member_names, write_thousand_member_tar, write_ustar,
@@ -643,10 +644,10 @@ fn production_extract_plan_1k_dest_conflicts_samples_50() {
             dest_dir: dest.to_string_lossy().into_owned(),
         })
         .unwrap();
-    assert!(plan.files >= EXTRACT_PLAN_CONFLICT_SAMPLE as i64);
+    assert_eq!(plan.files, 1000);
     assert!(plan.conflicts.len() <= EXTRACT_PLAN_CONFLICT_SAMPLE);
     assert!(plan.conflicts_truncated);
-    assert!(plan.conflict_count >= EXTRACT_PLAN_CONFLICT_SAMPLE as i64);
+    assert_eq!(plan.conflict_count, 1000);
 }
 
 #[test]
@@ -709,4 +710,165 @@ fn encrypted_member_bad_password_is_not_persisted() {
     let src = include_str!("session.rs");
     assert!(src.contains("password rejected or required"));
     assert!(src.contains("Native does not persist the secret") || src.contains("BadPassword"));
+}
+
+#[test]
+fn regression_cancel_before_extract_worker_drops_engine_pending() {
+    // Regression: cancel after begin_extract and before take_extract_work
+    // must drop PendingExtract::Engine so Arc<Session> is not leaked.
+    let tmp = TempTree::new("cancel-pending");
+    let tar = tmp.path().join("one.tar");
+    write_ustar(&tar, &[("a.txt", b"hello\n".as_slice())]).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let job_id = app
+        .begin_extract(ExtractOpts {
+            session_id,
+            members: vec!["/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("begin_extract");
+    assert!(app.job_has_pending_extract(job_id));
+    app.cancel(job_id).unwrap();
+    assert!(
+        !app.job_has_pending_extract(job_id),
+        "cancel must drop engine pending extract"
+    );
+    assert!(app.take_extract_work(job_id).is_none());
+    assert!(!dest.join("a.txt").exists());
+
+    let job_id = app
+        .begin_extract(ExtractOpts {
+            session_id,
+            members: vec!["/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("begin_extract stale");
+    assert!(app.job_has_pending_extract(job_id));
+    app.force_job_status(job_id, JobStatus::Cancelled);
+    assert!(app.job_has_pending_extract(job_id));
+    assert!(app.take_extract_work(job_id).is_none());
+    assert!(
+        !app.job_has_pending_extract(job_id),
+        "take_extract_work must drop pending when status is not Running"
+    );
+}
+
+#[test]
+fn production_allow_unsafe_paths_extracts_dotdot_member() {
+    let tmp = TempTree::new("allow-unsafe");
+    let tar = tmp.path().join("unsafe.tar");
+    write_ustar(&tar, &[("../evil.txt", b"nope\n".as_slice())]).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    app.set_config(ConfigPatch {
+        extract: Some(ExtractConfigPatch {
+            allow_unsafe_paths: Some(true),
+            overwrite: None,
+        }),
+        ..ConfigPatch::default()
+    })
+    .unwrap();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let plan = app
+        .extract_plan(ExtractPlanOpts {
+            session_id,
+            members: vec!["/../evil.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+        })
+        .expect("plan with allow_unsafe_paths must not PathEscape");
+    assert_eq!(plan.files, 1);
+    let job_id = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/../evil.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("extract allow_unsafe_paths must not PathEscape");
+    let events = app.take_events();
+    assert!(
+        !events.iter().any(|e| matches!(
+            e,
+            Event::JobFailed { job_id: id, code, .. }
+                if *id == job_id && code == "PathEscape"
+        )),
+        "worker must reach extract_to with allow_unsafe_paths; got {events:?}"
+    );
+}
+
+#[test]
+fn production_overlapping_dir_and_file_selection_dedupes() {
+    let tmp = TempTree::new("dedupe-sel");
+    let tar = tmp.path().join("nested.tar");
+    let a = b"aa\n".as_slice();
+    let b = b"bbb\n".as_slice();
+    write_ustar(&tar, &[("dir-00/a.txt", a), ("dir-00/b.txt", b)]).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let plan = app
+        .extract_plan(ExtractPlanOpts {
+            session_id,
+            members: vec!["/dir-00".into(), "/dir-00/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+    assert_eq!(plan.files, 2);
+    assert_eq!(plan.bytes, (a.len() + b.len()) as i64);
+    app.extract(ExtractOpts {
+        session_id,
+        members: vec!["/dir-00".into(), "/dir-00/a.txt".into()],
+        dest_dir: dest.to_string_lossy().into_owned(),
+        overwrite: "replace".into(),
+    })
+    .expect("extract overlap");
+    assert_eq!(fs::read(dest.join("dir-00").join("a.txt")).unwrap(), a);
+    assert_eq!(fs::read(dest.join("dir-00").join("b.txt")).unwrap(), b);
+}
+
+#[test]
+fn cancel_during_engine_dir_expand_writes_nothing() {
+    let tmp = TempTree::new("cancel-expand");
+    let tar = tmp.path().join("members-1000.tar");
+    write_thousand_member_tar(&tar).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let job_id = app
+        .begin_extract(ExtractOpts {
+            session_id,
+            members: vec!["/".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("begin_extract");
+    let work = app.take_extract_work(job_id).expect("engine work");
+    app.cancel(job_id).unwrap();
+    let mut cancelled = false;
+    drive_extract_work(work, |step| {
+        if matches!(step, ExtractStep::Cancelled) {
+            cancelled = true;
+        }
+    });
+    assert!(cancelled);
+    assert!(
+        dest.read_dir().unwrap().next().is_none(),
+        "cancel during expansion must not write"
+    );
 }

@@ -139,6 +139,10 @@ impl JobState {
             crate::paths::discard_secret(req.password);
         }
     }
+
+    fn discard_pending_extract(&mut self) {
+        self.pending_extract = None;
+    }
 }
 
 pub struct NativeApp {
@@ -392,11 +396,24 @@ impl NativeApp {
         }
     }
 
+    pub(crate) fn discard_pending_extract(&mut self, job_id: u32) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            job.discard_pending_extract();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn job_has_pending_open(&self, job_id: u32) -> bool {
         self.jobs
             .get(&job_id)
             .is_some_and(|job| job.pending_open.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn job_has_pending_extract(&self, job_id: u32) -> bool {
+        self.jobs
+            .get(&job_id)
+            .is_some_and(|job| job.pending_extract.is_some())
     }
 
     #[cfg(test)]
