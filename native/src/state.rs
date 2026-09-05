@@ -36,14 +36,6 @@ impl SessionState {
     pub fn source(&self) -> &str {
         &self.source
     }
-
-    pub fn fake_catalog(&self) -> Option<&FakeCatalog> {
-        match &self.backend {
-            SessionBackend::Fake(catalog) => Some(catalog),
-            #[cfg(feature = "session")]
-            SessionBackend::Engine(_) => None,
-        }
-    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -67,10 +59,47 @@ pub struct PendingExtractItem {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug)]
-pub struct PendingExtract {
-    pub overwrite: Overwrite,
-    pub items: Vec<PendingExtractItem>,
+/// Fake jobs copy tiny catalog bodies. Engine jobs store an unexpanded request
+/// plus `Arc<Session>` — never a `body: Vec<u8>`.
+pub enum PendingExtract {
+    Fake {
+        overwrite: Overwrite,
+        items: Vec<PendingExtractItem>,
+    },
+    #[cfg(feature = "session")]
+    Engine {
+        session: Arc<ratarmount_session::Session>,
+        members: Vec<String>,
+        dest_dir: PathBuf,
+        overwrite: Overwrite,
+        allow_unsafe_paths: bool,
+    },
+}
+
+impl fmt::Debug for PendingExtract {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fake { overwrite, items } => f
+                .debug_struct("Fake")
+                .field("overwrite", overwrite)
+                .field("items", items)
+                .finish(),
+            #[cfg(feature = "session")]
+            Self::Engine {
+                members,
+                dest_dir,
+                overwrite,
+                allow_unsafe_paths,
+                ..
+            } => f
+                .debug_struct("Engine")
+                .field("members", members)
+                .field("dest_dir", dest_dir)
+                .field("overwrite", overwrite)
+                .field("allow_unsafe_paths", allow_unsafe_paths)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -101,6 +130,10 @@ impl JobState {
         if let Some(req) = self.pending_open.take() {
             crate::paths::discard_secret(req.password);
         }
+    }
+
+    fn discard_pending_extract(&mut self) {
+        self.pending_extract = None;
     }
 }
 
@@ -355,11 +388,24 @@ impl NativeApp {
         }
     }
 
+    pub(crate) fn discard_pending_extract(&mut self, job_id: u32) {
+        if let Some(job) = self.jobs.get_mut(&job_id) {
+            job.discard_pending_extract();
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn job_has_pending_open(&self, job_id: u32) -> bool {
         self.jobs
             .get(&job_id)
             .is_some_and(|job| job.pending_open.is_some())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn job_has_pending_extract(&self, job_id: u32) -> bool {
+        self.jobs
+            .get(&job_id)
+            .is_some_and(|job| job.pending_extract.is_some())
     }
 
     #[cfg(test)]

@@ -8,6 +8,8 @@ pub const LOCAL_CACHE_DEFAULT_BYTES: i64 = 2 * 1024 * 1024 * 1024;
 pub const EXTRACT_PLAN_CONFLICT_SAMPLE: usize = 50;
 pub const EXTRACT_PLAN_CONFLICT_SCAN_ROWS: usize = 10_000;
 pub const EXTRACT_PLAN_CONFLICT_SCAN_MS: u64 = 250;
+/// Fail extract expansion rather than silently extracting a subset.
+pub const EXTRACT_EXPAND_MAX_FILES: usize = 10_000;
 
 const _: () = {
     assert!(EXTRACT_PLAN_CONFLICT_SCAN_ROWS >= EXTRACT_PLAN_CONFLICT_SAMPLE);

@@ -5,7 +5,7 @@ use napi::threadsafe_function::{ThreadsafeFunction, ThreadsafeFunctionCallMode};
 use napi::JsValue;
 use napi_derive::napi;
 
-use crate::commands::FuseMountResult;
+use crate::commands::{finish_extract_plan, finish_preview, FuseMountResult};
 use crate::error::ApiError;
 use crate::events::Event;
 use crate::parse::{
@@ -667,35 +667,35 @@ pub fn find(env: Env, opts: JsFindOpts) -> Result<JsFindPage> {
 
 #[napi]
 pub fn preview(env: Env, opts: JsPreviewOpts) -> Result<JsPreviewResult> {
-    with_app(env, |app| {
-        app.preview(opts.session_id, &opts.path)
-            .map(|kind| match kind {
-                PreviewKind::Text { text, truncated } => JsPreviewResult {
-                    kind: "text".into(),
-                    text: Some(text),
-                    truncated: Some(truncated),
-                    reason: None,
-                },
-                PreviewKind::Skipped { reason } => JsPreviewResult {
-                    kind: "skipped".into(),
-                    text: None,
-                    truncated: None,
-                    reason: Some(reason),
-                },
-            })
+    let prepared = with_app(env, |app| app.prepare_preview(opts.session_id, &opts.path))?;
+    let kind = finish_preview(prepared).map_err(|e| napi_err(env, e))?;
+    Ok(match kind {
+        PreviewKind::Text { text, truncated } => JsPreviewResult {
+            kind: "text".into(),
+            text: Some(text),
+            truncated: Some(truncated),
+            reason: None,
+        },
+        PreviewKind::Skipped { reason } => JsPreviewResult {
+            kind: "skipped".into(),
+            text: None,
+            truncated: None,
+            reason: Some(reason),
+        },
     })
 }
 
 #[napi]
 pub fn extract_plan(env: Env, opts: JsExtractPlanOpts) -> Result<JsExtractPlan> {
-    with_app(env, |app| {
-        app.extract_plan(ExtractPlanOpts {
+    let prepared = with_app(env, |app| {
+        app.prepare_extract_plan(ExtractPlanOpts {
             session_id: opts.session_id,
             members: opts.members,
             dest_dir: opts.dest_dir,
         })
-        .map(JsExtractPlan::from)
-    })
+    })?;
+    let plan = finish_extract_plan(prepared).map_err(|e| napi_err(env, e))?;
+    Ok(JsExtractPlan::from(plan))
 }
 
 #[napi]
@@ -786,13 +786,13 @@ fn run_extract_job_unlocked(job_id: u32) {
     let Some(work) = work else {
         return;
     };
-    let files_hint = work.items.len() as i64;
     let session_id = work.session_id;
     crate::commands::drive_extract_work(work, |step| {
         let mut app = global_app().lock().expect("native state mutex poisoned");
         match step {
             crate::commands::ExtractStep::Progress {
                 files_done,
+                files_hint,
                 bytes_out,
                 current,
             } => {
