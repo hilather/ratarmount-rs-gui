@@ -89,7 +89,7 @@ These are **buttons**, implemented by calling the engine — not by the UI prete
 | Share via HTTP | `Session::start_http(bind)` if G5.4 exists; else spawn `ratarmount --http --no-fuse…` |
 | Unmount / stop share | matching stop API or `ratarmount -u` |
 
-If the CLI binary is absent, hide those actions. `probeFeatures()` returns `{ fuse, http }`; the toolbar omits the buttons when a flag is false. FUSE probe also fails without fuse3 / macFUSE. Engine G3 paged `find` is `Session::find` (opaque `f1:` cursors; fake catalog still backs `RGUI_FAKE=1` / tests). File-manager drops onto the window arrive as napi `fileDrop` (`startFileDropWatch`) on **Linux X11** only; GPUIX 0.6 has no React `onDrop`. Wayland/macOS/Windows: picker / argv / recent.
+If the CLI binary is absent, hide those actions. `probeFeatures()` returns `{ fuse, http }`; the toolbar omits the buttons when a flag is false. FUSE probe also fails without fuse3 / macFUSE. Engine G3 paged `find` is `Session::find` (opaque `f1:` cursors; search box default is glob; `fts:` / `mode: 'fts'` is opt-in, never a side effect of `open`; fake catalog still backs `RGUI_FAKE=1` / tests). File-manager drops onto the window arrive as napi `fileDrop` (`startFileDropWatch`) on **Linux X11** only; GPUIX 0.6 has no React `onDrop`. Wayland/macOS/Windows: picker / argv / recent.
 
 ## Failure domains
 

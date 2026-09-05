@@ -139,9 +139,10 @@ find(opts: {
   limit?: number          // default 200, max 500
 }): Promise<FindPage>
 // Production: Session::find, paged. Opaque `f1:` cursors (not `d1:` list, not fake `kset:`).
-// Wrong-kind cursor → Internal. `mode: 'fts'` is opt-in (`FindOpts.fts`); never a side
-// effect of `open`. `totalHint` may be null. Fake catalog still backs RGUI_FAKE=1 / tests.
-// Do not dump 2M hits.
+// Wrong-kind cursor → Internal. Search box default is `mode: 'glob'` (typed fragments
+// wrapped as `*query*`) so the first keystroke is one SQL page. `mode: 'fts'` / `fts:`
+// prefix is opt-in (`FindOpts.fts`); never a side effect of `open`. `totalHint` may be
+// null. Fake catalog still backs RGUI_FAKE=1 / tests. Do not dump 2M hits.
 
 preview(opts: {
   sessionId: SessionId

@@ -308,6 +308,100 @@ fn engine_find_rejects_wrong_kind_cursors_and_round_trips_colon_path() {
     assert!(page2.next_cursor.is_none());
 }
 
+fn sidecar_mentions_files_fts(dir: &Path) -> bool {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return false;
+    };
+    entries.flatten().any(|ent| {
+        let path = ent.path();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        if !name.contains(".index") || !name.contains(".sqlite") {
+            return false;
+        }
+        fs::read(&path)
+            .map(|bytes| bytes.windows(b"files_fts".len()).any(|w| w == b"files_fts"))
+            .unwrap_or(false)
+    })
+}
+
+#[test]
+fn engine_glob_find_does_not_create_files_fts() {
+    if !session_feature_enabled() {
+        return;
+    }
+    let tmp = TempTree::new("find-no-fts");
+    let tar = thousand_tar(tmp.path());
+    let mut app = NativeApp::production();
+    let session_id = production_session_id(&mut app, &tar);
+    assert!(
+        !sidecar_mentions_files_fts(tmp.path()),
+        "open must not create files_fts"
+    );
+    let page = app
+        .find(FindOpts {
+            session_id,
+            pattern: "file-00*".into(),
+            mode: "glob".into(),
+            cursor: None,
+            limit: Some(10),
+        })
+        .expect("glob find");
+    assert_eq!(page.mode, "glob");
+    assert_eq!(page.entries.len(), 10);
+    assert!(
+        !sidecar_mentions_files_fts(tmp.path()),
+        "glob find must not create files_fts"
+    );
+}
+
+#[test]
+fn engine_find_fts_pages_limit_10() {
+    if !session_feature_enabled() {
+        return;
+    }
+    let tmp = TempTree::new("find-fts");
+    let tar = thousand_tar(tmp.path());
+    let mut app = NativeApp::production();
+    let session_id = production_session_id(&mut app, &tar);
+    assert!(
+        !sidecar_mentions_files_fts(tmp.path()),
+        "open must not create files_fts"
+    );
+    let page1 = app
+        .find(FindOpts {
+            session_id,
+            pattern: "file".into(),
+            mode: "fts".into(),
+            cursor: None,
+            limit: Some(10),
+        })
+        .expect("fts page 1");
+    assert_eq!(page1.mode, "fts");
+    assert_eq!(page1.entries.len(), 10);
+    let cursor = page1.next_cursor.as_ref().expect("fts next cursor");
+    assert!(cursor.starts_with("f1:"));
+    assert!(cursor.parse::<u64>().is_err());
+    assert!(
+        sidecar_mentions_files_fts(tmp.path()),
+        "mode fts is opt-in ensure_fts5"
+    );
+    let page2 = app
+        .find(FindOpts {
+            session_id,
+            pattern: "file".into(),
+            mode: "fts".into(),
+            cursor: page1.next_cursor.clone(),
+            limit: Some(10),
+        })
+        .expect("fts page 2");
+    assert_eq!(page2.entries.len(), 10);
+    let seen: HashSet<&str> = page1.entries.iter().map(|e| e.path.as_str()).collect();
+    assert!(page2
+        .entries
+        .iter()
+        .all(|e| !seen.contains(e.path.as_str())));
+}
+
 #[test]
 fn list_100k_catalog_is_page_sized() {
     let mut app = NativeApp::for_test();

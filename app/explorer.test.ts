@@ -14,6 +14,7 @@ import {
   formatSize,
   LIST_LIMIT_DEFAULT,
   parentPath,
+  searchBoxQuery,
   shortenPath,
   siblingIndexPath,
   type ExplorerSnapshot,
@@ -790,6 +791,21 @@ test('index-only is headless and does not stay in the explorer', async () => {
   expect(controller.getSnapshot().archivePath).toBeNull()
 })
 
+test('search box defaults to glob and treats fts: as opt-in', () => {
+  expect(searchBoxQuery('file-')).toEqual({ pattern: '*file-*', mode: 'glob' })
+  expect(searchBoxQuery('*.txt')).toEqual({ pattern: '*.txt', mode: 'glob' })
+  expect(searchBoxQuery('file-00*')).toEqual({ pattern: 'file-00*', mode: 'glob' })
+  expect(searchBoxQuery('fts:readme')).toEqual({ pattern: 'fts:readme', mode: 'fts' })
+})
+
+test('setSearch sends glob unless the query asks for FTS', async () => {
+  const { fake, controller } = await openRoot()
+  await controller.setSearch('*.txt')
+  expect(fake.findCalls[0]).toMatchObject({ mode: 'glob', pattern: '*.txt' })
+  await controller.setSearch('fts:file-')
+  expect(fake.findCalls.at(-1)).toMatchObject({ mode: 'fts', pattern: 'fts:file-' })
+})
+
 test('paged find keeps React state page-sized', async () => {
   const { fake, controller } = await openRoot()
   await controller.setSearch('file-')
@@ -800,7 +816,8 @@ test('paged find keeps React state page-sized', async () => {
   expect(snap.nextCursor).not.toBeNull()
   expect(fake.findCalls).toHaveLength(1)
   expect(fake.findCalls[0]?.limit).toBe(LIST_LIMIT_DEFAULT)
-  expect(fake.findCalls[0]?.mode).toBe('fts')
+  expect(fake.findCalls[0]?.mode).toBe('glob')
+  expect(fake.findCalls[0]?.pattern).toBe('*file-*')
   await controller.loadMore()
   expect(controller.getSnapshot().entries.length).toBe(LIST_LIMIT_DEFAULT * 2)
   expect(controller.getSnapshot().entries.length).toBeLessThan(FAKE_ROOT_TOTAL)
