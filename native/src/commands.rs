@@ -13,7 +13,7 @@ use crate::types::EngineConfig;
 use crate::argv::{
     native_overwrite_for_launch, overwrite_wire, resolve_extract_dest, LaunchAction, LaunchIntent,
 };
-use crate::catalog::{clamp_limit, decode_cursor, encode_cursor, sample_conflicts};
+use crate::catalog::{clamp_limit, sample_conflicts};
 use crate::config::{
     apply_patch, clear_local_index_cache as wipe_local_index_cache, sanitize_config,
     write_config_file,
@@ -130,31 +130,14 @@ impl NativeApp {
 
     pub fn find(&self, opts: FindOpts) -> Result<FindPage> {
         let session = self.session(opts.session_id)?;
-        let catalog = session
-            .fake_catalog()
-            .ok_or_else(|| crate::session::engine_unavailable("Session::find"))?;
-        // TODO(engine): Session::find (G3). Fake catalog is the working paged stub.
-        let mode = match opts.mode.as_str() {
-            "glob" | "fts" => opts.mode.clone(),
-            other => {
-                return Err(ApiError::internal(format!("unknown find mode '{other}'")));
-            }
-        };
-        let key = format!("{}|{mode}", opts.pattern);
-        let start = match opts.cursor.as_deref() {
-            Some(cursor) => decode_cursor(cursor, &key)?,
-            None => 0,
-        };
-        let limit = clamp_limit(opts.limit);
-        let (entries, next, total) = catalog.find_page(&opts.pattern, &mode, start, limit);
-        let next_cursor = next.map(|idx| encode_cursor(&key, idx));
-        Ok(FindPage {
-            pattern: opts.pattern,
-            mode,
-            entries,
-            next_cursor,
-            total_hint: Some(total),
-        })
+        let limit = clamp_limit(opts.limit) as u32;
+        crate::session::find_backend(
+            &session.backend,
+            &opts.pattern,
+            &opts.mode,
+            opts.cursor.as_deref(),
+            limit,
+        )
     }
 
     pub fn preview(&self, session_id: u32, path: &str) -> Result<PreviewKind> {

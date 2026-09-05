@@ -351,7 +351,7 @@ export function normalizeFindPage(raw: unknown): FindPage {
   const hint = asNumber(pick(obj, 'totalHint', 'total_hint'))
   const entriesRaw = obj.entries
   const entries = Array.isArray(entriesRaw) ? entriesRaw.map(normalizeDirEnt) : []
-  const modeRaw = String(obj.mode ?? 'fts')
+  const modeRaw = String(obj.mode ?? 'glob')
   const mode: FindMode = modeRaw === 'glob' ? 'glob' : 'fts'
   return {
     pattern: String(obj.pattern ?? ''),

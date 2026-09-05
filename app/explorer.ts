@@ -7,6 +7,7 @@ import {
   type ExtractConflict,
   type ExtractPlan,
   type FeatureProbe,
+  type FindMode,
   type NativeAddon,
   type NativeOverwrite,
   type OpenResult,
@@ -23,6 +24,18 @@ import {
 
 export const LIST_LIMIT_DEFAULT = 200
 export const LIST_LIMIT_MAX = 500
+
+/** Search box default is glob so the first keystroke is one SQL page, not FTS5. */
+export function searchBoxQuery(query: string): { pattern: string; mode: FindMode } {
+  if (query.startsWith('fts:')) {
+    return { pattern: query, mode: 'fts' }
+  }
+  if (/[*?\[]/.test(query)) {
+    return { pattern: query, mode: 'glob' }
+  }
+  return { pattern: `*${query}*`, mode: 'glob' }
+}
+
 export const LIST_NEAR_END = 24
 export const EXTRACT_CONFIRM_FILES = 1000
 export const EXTRACT_CONFIRM_BYTES = 1024 * 1024 * 1024
@@ -917,10 +930,11 @@ export class ExplorerController {
     if (!native || sessionId == null) {
       throw new CommandError('Internal', 'no open session', false)
     }
+    const { pattern, mode } = searchBoxQuery(opts.query)
     const page = await native.find({
       sessionId,
-      pattern: opts.query,
-      mode: 'fts',
+      pattern,
+      mode,
       ...(opts.cursor === null ? {} : { cursor: opts.cursor }),
       limit: this.listLimit,
     })
