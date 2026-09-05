@@ -67,10 +67,47 @@ pub struct PendingExtractItem {
     pub body: Vec<u8>,
 }
 
-#[derive(Debug)]
-pub struct PendingExtract {
-    pub overwrite: Overwrite,
-    pub items: Vec<PendingExtractItem>,
+/// Fake jobs copy tiny catalog bodies. Engine jobs store an unexpanded request
+/// plus `Arc<Session>` — never a `body: Vec<u8>`.
+pub enum PendingExtract {
+    Fake {
+        overwrite: Overwrite,
+        items: Vec<PendingExtractItem>,
+    },
+    #[cfg(feature = "session")]
+    Engine {
+        session: Arc<ratarmount_session::Session>,
+        members: Vec<String>,
+        dest_dir: PathBuf,
+        overwrite: Overwrite,
+        allow_unsafe_paths: bool,
+    },
+}
+
+impl fmt::Debug for PendingExtract {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Fake { overwrite, items } => f
+                .debug_struct("Fake")
+                .field("overwrite", overwrite)
+                .field("items", items)
+                .finish(),
+            #[cfg(feature = "session")]
+            Self::Engine {
+                members,
+                dest_dir,
+                overwrite,
+                allow_unsafe_paths,
+                ..
+            } => f
+                .debug_struct("Engine")
+                .field("members", members)
+                .field("dest_dir", dest_dir)
+                .field("overwrite", overwrite)
+                .field("allow_unsafe_paths", allow_unsafe_paths)
+                .finish_non_exhaustive(),
+        }
+    }
 }
 
 #[derive(Debug)]

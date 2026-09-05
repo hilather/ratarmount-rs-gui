@@ -4,7 +4,7 @@ A native GPU-rendered archive explorer that indexes and browses multi-gigabyte T
 
 GPUIX (React + Zed GPUI) in the UI process. `ratarmount-session` in-process for index / list / extract. No Electron. No webview. Archive bytes never enter the JavaScript heap.
 
-**Status:** Production `open` / `list` / `lookup` / close / index jobs use in-process `ratarmount-session` 0.1.30. `bun run dev` in `app/` (napi addon rebuilt with default features) opens a 1100×720 GPUIX window titled `ratarmount`. Without `RGUI_FAKE=1`, Open on a real TAR builds or reuses a 0.7.x sidecar and pages the catalog. Extract / text preview / search of real members still use the fake catalog or fail until follow-on wiring. `RGUI_FAKE=1` keeps the in-memory catalog for UI tests.
+**Status:** Production `open` / `list` / `lookup` / close / index jobs / extract / text preview use in-process `ratarmount-session` 0.1.30. `bun run dev` in `app/` (napi addon rebuilt with default features) opens a 1100×720 GPUIX window titled `ratarmount`. Without `RGUI_FAKE=1`, Open on a real TAR builds or reuses a 0.7.x sidecar and pages the catalog; Extract to… and the preview pane read real member bytes (`extract_to` / `read_range`, never `readAll`). Image preview stays skipped (`unknown`). Search of real members still uses the fake catalog until follow-on wiring. `RGUI_FAKE=1` keeps the in-memory catalog for UI tests.
 
 Chrome/Electron `ArrayBuffer` and wasm32 linear memory both cap around 2–4 GiB — that is the failure mode this product exists to avoid. The desktop GPUIX build is in scope **only if** React never sees archive bytes. The GPUIX browser/`bun run web` target is out of scope.
 

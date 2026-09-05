@@ -214,7 +214,9 @@ on('fileDrop', (e: { paths: string[] }) => {})
 
 `preview` image path: **not implemented**. Native `PreviewKind` is `Text | Skipped` only; non-text is `skipped: unknown`. Do not decode images in JS.
 
-`preview` text path: read min(file_size, preview.maxBytes), lossy UTF-8.
+`preview` text path: lookup **size first**. If `size > preview.maxBytes` (default 8 MiB, hard-clamped to 64 MiB) → `{ kind: 'skipped', reason: 'too-large' }` **without** `read_range`. Otherwise `read_range` with `max_len = cap`; NUL in the buffer → `skipped: binary`; else lossy UTF-8. Directories stay `skipped: unknown`. napi clones `Arc<Session>` and drops `Mutex<NativeApp>` before the read.
+
+`extract` / `extractPlan` production path uses `Session::extract_to` and a native files-only walk (`list_dirents_page`). Selected directories are expanded on the extract worker after the mutex is dropped (engine named-dir extract only creates the folder). Empty `members` is extract-all. Engine pending jobs store unexpanded paths + `Arc<Session>` — never member `body: Vec<u8>`. `extractPlan` is still a dest-side probe with the same caps (sample 50 / 10_000 rows / 250 ms); napi clones `Arc` and drops `with_app` before the walk.
 
 There is **no** `readAll(path)`.
 

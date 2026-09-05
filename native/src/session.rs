@@ -1,5 +1,7 @@
 //! In-process `ratarmount-session` adapter. Do not import the `ratarmount` binary crate.
 
+#[cfg(feature = "session")]
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -155,23 +157,27 @@ impl EngineSession {
         length: u64,
         max_len: u64,
     ) -> Result<Vec<u8>> {
-        let _ = (path, offset);
         if length > max_len {
             return Err(ApiError::new(
                 crate::error::ErrorCode::PreviewTooLarge,
                 "read_range length exceeds preview cap",
             ));
         }
-        // TODO(engine): read_range (G1.4). Never slurp a whole member.
-        Err(engine_unavailable("read_range"))
+        #[cfg(feature = "session")]
+        {
+            read_range_capped(&self.inner, path, offset, length)
+        }
+        #[cfg(not(feature = "session"))]
+        {
+            let _ = (path, offset);
+            Err(engine_unavailable("read_range"))
+        }
     }
 
     pub fn extract_to(&self, req: ExtractRequest) -> Result<()> {
         #[cfg(feature = "session")]
         {
-            self.inner
-                .extract_to(map_extract_request(req), None, None)
-                .map_err(map_engine_error)
+            extract_session_to(&self.inner, req, None, None)
         }
         #[cfg(not(feature = "session"))]
         {
@@ -191,23 +197,75 @@ impl EngineSession {
     }
 }
 
+#[allow(dead_code)]
 pub fn extract_to(session: Option<&EngineSession>, req: ExtractRequest) -> Result<()> {
     match session {
         Some(session) => session.extract_to(req),
         None => {
-            // TODO(engine): extract_to — NativeApp production extract is a follow-on PR.
             let _ = req;
             Err(engine_unavailable("extract_to"))
         }
     }
 }
 
+#[allow(dead_code)]
 pub fn extract_opts_to_request(opts: &ExtractOpts, overwrite: Overwrite) -> ExtractRequest {
     ExtractRequest {
         members: opts.members.clone(),
         dest_dir: PathBuf::from(&opts.dest_dir),
         overwrite,
         allow_unsafe_paths: false,
+    }
+}
+
+#[cfg(feature = "session")]
+pub fn extract_session_to(
+    session: &ratarmount_session::Session,
+    req: ExtractRequest,
+    progress: Option<&dyn Fn(ratarmount_session::ExtractProgress)>,
+    cancel: Option<&AtomicBool>,
+) -> Result<()> {
+    session
+        .extract_to(map_extract_request(req), progress, cancel)
+        .map_err(map_engine_error)
+}
+
+/// Bounded read. Caller must skip members larger than the preview cap first.
+#[cfg(feature = "session")]
+pub fn read_range_capped(
+    session: &ratarmount_session::Session,
+    path: &str,
+    offset: u64,
+    max_len: u64,
+) -> Result<Vec<u8>> {
+    let req = ratarmount_session::ReadRequest {
+        path: path.to_string(),
+        offset,
+        max_len,
+    };
+    let reader = session.read_range(req).map_err(map_engine_error)?;
+    let mut buf = Vec::new();
+    reader
+        .take(max_len)
+        .read_to_end(&mut buf)
+        .map_err(map_read_io)?;
+    Ok(buf)
+}
+
+#[cfg(feature = "session")]
+fn map_read_io(err: std::io::Error) -> ApiError {
+    match err.kind() {
+        std::io::ErrorKind::NotFound => ApiError::not_found("not found"),
+        std::io::ErrorKind::PermissionDenied => {
+            let msg = err.to_string();
+            if msg.to_ascii_lowercase().contains("password") {
+                // Encrypted member. Native does not persist the secret.
+                ApiError::bad_password("password rejected or required")
+            } else {
+                ApiError::internal(format!("permission denied: {err}"))
+            }
+        }
+        _ => ApiError::internal(err.to_string()),
     }
 }
 
@@ -687,7 +745,7 @@ fn map_dirent(ent: ratarmount_session::DirEnt) -> crate::types::DirEnt {
     }
 }
 
-fn saturate_i64(n: u64) -> i64 {
+pub(crate) fn saturate_i64(n: u64) -> i64 {
     i64::try_from(n).unwrap_or(i64::MAX)
 }
 

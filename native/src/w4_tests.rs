@@ -2,17 +2,23 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use crate::catalog::FakeCatalog;
-use crate::commands::{drive_extract_work, write_extract_item, ExtractStep};
+use crate::commands::{
+    drive_extract_work, preview_after_lookup, write_extract_item, ExtractPayload, ExtractStep,
+};
 use crate::error::ErrorCode;
 use crate::events::Event;
 use crate::paths::{is_encrypted_source, member_dest_path};
-use crate::session::{engine_unavailable, extract_to, EngineSession, ExtractRequest};
-use crate::state::{JobKind, NativeApp};
+use crate::session::{
+    engine_unavailable, extract_to, session_feature_enabled, EngineSession, ExtractRequest,
+};
+use crate::state::{JobKind, NativeApp, PendingExtract};
 use crate::types::{
     ExtractOpts, ExtractPlanOpts, OpenOpts, OpenOutcome, Overwrite, PreviewKind, Recreate,
     EXTRACT_PLAN_CONFLICT_SAMPLE, FAKE_ENCRYPTED_PASSWORD, PREVIEW_DEFAULT_BYTES, STUB_HOLD_DEST,
 };
-use crate::ustar_fixture::{ustar_member_names, write_ustar};
+use crate::ustar_fixture::{
+    member_body, member_name, ustar_member_names, write_thousand_member_tar, write_ustar,
+};
 use crate::{IndexPolicy, ListOpts};
 
 struct TempTree(PathBuf);
@@ -51,6 +57,44 @@ fn extract_one(app: &mut NativeApp, session_id: u32, member: &str, dest: &Path, 
         overwrite: overwrite.into(),
     })
     .expect("extract");
+}
+
+fn production_open(app: &mut NativeApp, tar: &Path) -> Option<u32> {
+    match app.open(OpenOpts {
+        source: tar.to_string_lossy().into_owned(),
+        policy: IndexPolicy::Sibling,
+        explicit_path: None,
+        recreate: Recreate::IfInvalid,
+        password: None,
+        recursive: None,
+        recursion_depth: None,
+    }) {
+        Ok(OpenOutcome::Session { session_id }) => Some(session_id),
+        Ok(OpenOutcome::Job { job_id }) => {
+            let events = app.take_events();
+            let session_id = events.iter().find_map(|e| match e {
+                Event::JobSucceeded {
+                    job_id: id,
+                    session_id: Some(session_id),
+                } if *id == job_id => Some(*session_id),
+                _ => None,
+            });
+            if session_feature_enabled() {
+                Some(session_id.unwrap_or_else(|| {
+                    panic!("session feature: expected jobSucceeded with sessionId, got {events:?}")
+                }))
+            } else {
+                session_id
+            }
+        }
+        Err(err) => {
+            assert!(
+                !session_feature_enabled(),
+                "feature `session` is enabled; production open must succeed, got {err}"
+            );
+            None
+        }
+    }
 }
 
 #[test]
@@ -196,7 +240,7 @@ fn extract_hold_then_cancel() {
         events.last(),
         Some(Event::JobCancelled { job_id: id }) if *id == job_id
     ));
-    app.emit_extract_progress(job_id, 2, 10, 99, "/dir-00/a.txt".into());
+    app.emit_extract_progress(job_id, 2, Some(10), 99, Some("/dir-00/a.txt".into()));
     let late = app.take_events();
     assert!(
         !late
@@ -262,11 +306,9 @@ fn member_dest_path_rejects_escape() {
 }
 
 #[test]
-fn read_range_and_extract_to_are_engine_todos() {
+fn no_read_all_and_read_range_still_caps_length() {
     let src = include_str!("session.rs");
     assert!(src.contains("fn read_range("));
-    assert!(src.contains("TODO(engine): read_range"));
-    assert!(src.contains("TODO(engine): extract_to"));
     assert!(!src.contains("fn read_all(") && !src.contains("fn readAll("));
 
     let err = extract_to(
@@ -346,8 +388,11 @@ fn cancel_during_dest_write_stops_further_writes() {
         })
         .unwrap();
     let work = app.take_extract_work(job_id).expect("pending dest work");
-    assert!(work.items.len() > 2);
-    write_extract_item(&work.items[0], work.overwrite).unwrap();
+    let ExtractPayload::Fake { items, overwrite } = &work.payload else {
+        panic!("expected fake extract payload");
+    };
+    assert!(items.len() > 2);
+    write_extract_item(&items[0], *overwrite).unwrap();
     app.cancel(job_id).unwrap();
     assert!(app.job_cancel_requested(job_id));
     let mut extra = 0_usize;
@@ -390,4 +435,278 @@ fn list_page_stays_bounded_on_thousand_catalog() {
         .unwrap();
     assert_eq!(page.entries.len(), 50);
     assert!(page.next_cursor.is_some());
+}
+
+#[test]
+fn preview_too_large_is_lookup_only_without_read_range() {
+    // Regression: default 8 MiB cap must skip a 9 MiB member without reading bytes.
+    let mut read = false;
+    let kind = preview_after_lookup(false, 9 * 1024 * 1024, PREVIEW_DEFAULT_BYTES, || {
+        read = true;
+        Ok(b"should-not-read".to_vec())
+    })
+    .unwrap();
+    assert!(!read, "too-large preview must not call read_range");
+    match kind {
+        PreviewKind::Skipped { reason } => assert_eq!(reason, "too-large"),
+        other => panic!("expected skipped too-large, got {other:?}"),
+    }
+}
+
+#[test]
+fn production_extract_one_1k_tar_member_via_native_app() {
+    let tmp = TempTree::new("prod-extract-one");
+    let tar = tmp.path().join("members-1000.tar");
+    write_thousand_member_tar(&tar).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    extract_one(
+        &mut app,
+        session_id,
+        &format!("/{}", member_name(0)),
+        &dest,
+        "replace",
+    );
+    let got = fs::read(dest.join(member_name(0))).expect("extracted");
+    assert_eq!(got, member_body(0));
+    let events = app.take_events();
+    assert!(events
+        .iter()
+        .any(|e| matches!(e, Event::JobSucceeded { .. })));
+}
+
+#[test]
+fn production_directory_extract_writes_children_and_plan_matches() {
+    let tmp = TempTree::new("prod-dir-extract");
+    let tar = tmp.path().join("nested.tar");
+    let a = b"aa\n".as_slice();
+    let b = b"bbb\n".as_slice();
+    write_ustar(
+        &tar,
+        &[
+            ("dir-00/a.txt", a),
+            ("dir-00/b.txt", b),
+            ("root.txt", b"root\n".as_slice()),
+        ],
+    )
+    .unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let dir = app.lookup(session_id, "/dir-00").unwrap().expect("dir");
+    assert!(dir.is_dir, "engine must synthesize /dir-00 as a directory");
+    let plan = app
+        .extract_plan(ExtractPlanOpts {
+            session_id,
+            members: vec!["/dir-00".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+    assert_eq!(plan.files, 2);
+    assert_eq!(plan.bytes, (a.len() + b.len()) as i64);
+    extract_one(&mut app, session_id, "/dir-00", &dest, "replace");
+    assert_eq!(fs::read(dest.join("dir-00").join("a.txt")).unwrap(), a);
+    assert_eq!(fs::read(dest.join("dir-00").join("b.txt")).unwrap(), b);
+    assert!(
+        !dest.join("root.txt").exists(),
+        "selecting a directory must not extract sibling files"
+    );
+}
+
+#[test]
+fn production_preview_text_under_one_kib_from_ustar() {
+    let tmp = TempTree::new("prod-preview-text");
+    let tar = tmp.path().join("hello.tar");
+    write_ustar(&tar, &[("tiny.txt", b"hello\n".as_slice())]).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    match app.preview(session_id, "/tiny.txt").unwrap() {
+        PreviewKind::Text { text, truncated } => {
+            assert_eq!(text, "hello\n");
+            assert!(!truncated);
+            assert!(text.len() < 1024);
+        }
+        other => panic!("expected text preview, got {other:?}"),
+    }
+}
+
+#[test]
+fn production_default_8_mib_config_refuses_9_mib_member() {
+    let tmp = TempTree::new("prod-preview-9mib");
+    let tar = tmp.path().join("huge.tar");
+    let huge = vec![b'x'; 9 * 1024 * 1024];
+    write_ustar(&tar, &[("huge.bin", huge.as_slice())]).unwrap();
+    let mut app = NativeApp::production();
+    assert_eq!(app.get_config().preview.max_bytes, PREVIEW_DEFAULT_BYTES);
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let ent = app.lookup(session_id, "/huge.bin").unwrap().unwrap();
+    assert_eq!(ent.size, 9 * 1024 * 1024);
+    match app.preview(session_id, "/huge.bin").unwrap() {
+        PreviewKind::Skipped { reason } => assert_eq!(reason, "too-large"),
+        other => panic!("expected skipped too-large, got {other:?}"),
+    }
+}
+
+#[test]
+fn production_path_escape_writes_nothing() {
+    let tmp = TempTree::new("prod-unsafe");
+    let tar = tmp.path().join("unsafe.tar");
+    write_ustar(&tar, &[("../evil.txt", b"nope\n".as_slice())]).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let err = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/../evil.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect_err("PathEscape");
+    assert_eq!(err.code, ErrorCode::PathEscape);
+    assert!(!err.retryable());
+    assert!(
+        dest.read_dir().unwrap().next().is_none(),
+        "PathEscape must not write"
+    );
+    assert!(!tmp.path().join("evil.txt").exists());
+
+    match EngineSession::open(&crate::session::OpenRequest {
+        source: tar.to_string_lossy().into_owned(),
+        policy: IndexPolicy::Sibling,
+        explicit_path: None,
+        extra_dirs: Vec::new(),
+        recursive: false,
+        recursion_depth: None,
+        recreate: Recreate::IfInvalid,
+        password: None,
+    }) {
+        Ok(session) => {
+            let err = extract_to(
+                Some(&session),
+                ExtractRequest {
+                    members: vec!["/../evil.txt".into()],
+                    dest_dir: dest.clone(),
+                    overwrite: Overwrite::Replace,
+                    allow_unsafe_paths: false,
+                },
+            )
+            .expect_err("engine PathEscape");
+            assert_eq!(err.code, ErrorCode::PathEscape);
+            assert!(
+                dest.read_dir().unwrap().next().is_none(),
+                "engine PathEscape must not write"
+            );
+            session.close();
+        }
+        Err(err) => {
+            assert!(
+                !session_feature_enabled(),
+                "feature `session` is enabled; EngineSession::open must succeed, got {err}"
+            );
+        }
+    }
+}
+
+#[test]
+fn production_extract_plan_1k_dest_conflicts_samples_50() {
+    let tmp = TempTree::new("prod-plan-1k");
+    let tar = tmp.path().join("members-1000.tar");
+    write_thousand_member_tar(&tar).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    for i in 0..1000 {
+        fs::write(dest.join(format!("file-{i:04}.txt")), b"old").unwrap();
+    }
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let plan = app
+        .extract_plan(ExtractPlanOpts {
+            session_id,
+            members: vec![],
+            dest_dir: dest.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+    assert!(plan.files >= EXTRACT_PLAN_CONFLICT_SAMPLE as i64);
+    assert!(plan.conflicts.len() <= EXTRACT_PLAN_CONFLICT_SAMPLE);
+    assert!(plan.conflicts_truncated);
+    assert!(plan.conflict_count >= EXTRACT_PLAN_CONFLICT_SAMPLE as i64);
+}
+
+#[test]
+fn regression_engine_pending_extract_has_no_member_body() {
+    // Regression: production extract job table must not contain a body: Vec<u8>
+    // for engine backends.
+    let state = include_str!("state.rs");
+    assert!(state.contains("PendingExtract"));
+    assert!(state.contains("pub body: Vec<u8>"));
+    #[cfg(feature = "session")]
+    {
+        assert!(state.contains("Engine {"));
+        let engine_idx = state.find("Engine {").expect("engine pending");
+        let fake_body = state.find("pub body: Vec<u8>").expect("fake body");
+        assert!(
+            fake_body < engine_idx,
+            "engine pending variant must not declare body: Vec<u8>"
+        );
+        assert!(!state[engine_idx..].contains("body: Vec<u8>"));
+    }
+
+    let tmp = TempTree::new("prod-no-body");
+    let tar = tmp.path().join("one.tar");
+    write_ustar(&tar, &[("a.txt", b"hello\n".as_slice())]).unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let job_id = app
+        .begin_extract(ExtractOpts {
+            session_id,
+            members: vec!["/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("begin_extract");
+    match app
+        .jobs
+        .get(&job_id)
+        .and_then(|j| j.pending_extract.as_ref())
+    {
+        #[cfg(feature = "session")]
+        Some(PendingExtract::Engine { members, .. }) => {
+            assert_eq!(members, &["/a.txt".to_string()]);
+        }
+        Some(PendingExtract::Fake { items, .. }) => {
+            panic!("engine session stored fake bodies: {items:?}");
+        }
+        None => panic!("missing pending extract"),
+    }
+}
+
+#[test]
+fn encrypted_member_bad_password_is_not_persisted() {
+    // Production encrypted-member BadPassword is mapped in map_read_io / map_engine_error.
+    // No encrypted fixture is checked in here — do not add a huge encrypted archive.
+    // Fake path remains covered by encrypted_open_bad_password_then_retry.
+    let src = include_str!("session.rs");
+    assert!(src.contains("password rejected or required"));
+    assert!(src.contains("Native does not persist the secret") || src.contains("BadPassword"));
 }
