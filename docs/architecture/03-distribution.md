@@ -14,7 +14,7 @@ Do **not** make the GUI a wrapper that shells out for `list` / `extract`. That r
 
 ## Version pin
 
-GUI installer version **is the engine tag**. Source of truth: [`packaging/engine-pin`](../../packaging/engine-pin) (currently `0.1.29`).  
+GUI installer version **is the engine tag**. Source of truth: [`packaging/engine-pin`](../../packaging/engine-pin) (currently `0.1.30`, same tag as `native/Cargo.toml` `ratarmount-session`).  
 `VERSION` / tag `vX.Y.Z` must match that pin (`packaging/version.sh`). Distro `Depends: ratarmount (>= X.Y.Z)` uses the same pin. Standalone bundles copy the CLI from the matching `ratarmount-rs` GitHub Release asset.
 
 On startup, if PATH binary exists and `ratarmount --version` ≠ bundled, prefer bundled for FUSE/HTTP spawned from the GUI. Show a settings note when they differ.
@@ -120,11 +120,11 @@ Do **not** vendor a fake `ratarmount` binary in git. Cache downloads under `thir
 
 ### Native crate pin (W2)
 
-Pinned to engine git tag **`v0.1.30`**: `ratarmount-session` with `default-features = false` and an empty extra allowlist. Native feature `session` is default-on. Never enable `fuse` / `nfs` / `smb` / `http-export`. Do **not** import the `ratarmount` binary crate. Packaging `engine-pin` may still read `0.1.29` until a follow-on CLI-asset bump.
+Pinned to engine git tag **`v0.1.30`**: `ratarmount-session` with `default-features = false` and an empty extra allowlist. Native feature `session` is default-on. Never enable `fuse` / `nfs` / `smb` / `http-export`. Do **not** import the `ratarmount` binary crate. Packaging `engine-pin` is **`0.1.30`** so `fetch-engine-cli.sh` and distro `Depends: ratarmount (>= 0.1.30)` track the same tag.
 
 ### Honest W7 status
 
-Scripts, icons, layout/Depends tests, and a tag-job dry-run are in tree. A portable tarball / macOS `.app` that **runs on a clean machine and opens a TAR** still needs a compiled GPUIX GUI binary plus the in-process session (engine G0–G2). Engine CLI assets for `v0.1.29` exist and can be fetched; they are not a list/extract backend. Signed/notarized artifacts are produced **as available** (cosign OIDC on tag when binaries exist; Apple notarize skipped without a cert — Right-click → Open).
+Scripts, icons, layout/Depends tests, and a tag-job dry-run are in tree. Production open/list uses in-process `ratarmount-session` 0.1.30. A portable tarball / macOS `.app` that **runs on a clean machine and opens a TAR** still needs a compiled GPUIX GUI binary in packaging CI — that claim is **not** made. `packaging/fetch-engine-cli.sh` fetches pin-matched CLI assets for `v0.1.30`; missing GitHub release assets fail closed (standalone scripts **refuse to invent a stub CLI**). The CLI is not a list/extract backend. Signed/notarized artifacts are produced **as available** (cosign OIDC on tag when binaries exist; Apple notarize skipped without a cert — Right-click → Open).
 
 ## Auto-update
 
@@ -147,8 +147,8 @@ libarchive: prefer static link in the native cdylib so the GUI does not depend o
 
 ```bash
 cosign verify-blob \
-  --bundle ratarmount-gui_0.1.29_amd64.deb.cosign.bundle \
+  --bundle ratarmount-gui_0.1.30_amd64.deb.cosign.bundle \
   --certificate-identity-regexp 'https://github.com/hilather/ratarmount-rs-gui/.github/workflows/packages.yml@.*' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
-  ratarmount-gui_0.1.29_amd64.deb
+  ratarmount-gui_0.1.30_amd64.deb
 ```

@@ -40,24 +40,24 @@ write_pin() {
 export ENGINE_PIN_FILE="$TMP/engine-pin"
 unset VERSION GITHUB_REF_TYPE GITHUB_REF_NAME ENGINE_PIN || true
 
-write_pin "0.1.29"
+write_pin "0.1.30"
 got="$(rgui_engine_pin)"
-assert_eq "reads engine-pin file" "$got" "0.1.29"
+assert_eq "reads engine-pin file" "$got" "0.1.30"
 
 export ENGINE_PIN=v0.2.0
 got="$(rgui_engine_pin)"
 assert_eq "ENGINE_PIN overrides file and strips v" "$got" "0.2.0"
 unset ENGINE_PIN
 
-write_pin "0.1.29"
+write_pin "0.1.30"
 unset VERSION
 got="$(rgui_resolve_version)"
-assert_eq "non-tag uses engine-pin" "$got" "0.1.29"
+assert_eq "non-tag uses engine-pin" "$got" "0.1.30"
 
 export GITHUB_REF_TYPE=tag
-export GITHUB_REF_NAME=v0.1.29
+export GITHUB_REF_NAME=v0.1.30
 got="$(rgui_resolve_version)"
-assert_eq "tag match strips v" "$got" "0.1.29"
+assert_eq "tag match strips v" "$got" "0.1.30"
 
 export GITHUB_REF_NAME=v0.1.11
 set +e
@@ -73,9 +73,9 @@ else
 fi
 
 unset GITHUB_REF_TYPE GITHUB_REF_NAME
-export VERSION=0.1.29
+export VERSION=0.1.30
 got="$(rgui_resolve_version)"
-assert_eq "VERSION env matching pin" "$got" "0.1.29"
+assert_eq "VERSION env matching pin" "$got" "0.1.30"
 
 export VERSION=9.9.9
 set +e
@@ -112,6 +112,19 @@ cli_out="$(
 )"
 assert_eq "--resolve emits VERSION=" "$(printf '%s\n' "$cli_out" | grep '^VERSION=')" "VERSION=1.2.3"
 assert_eq "--resolve emits ENGINE_PIN=" "$(printf '%s\n' "$cli_out" | grep '^ENGINE_PIN=')" "ENGINE_PIN=1.2.3"
+
+# Snapshot the committed pin: fetch-engine-cli / distro Depends track the session crate tag.
+unset ENGINE_PIN VERSION GITHUB_REF_TYPE GITHUB_REF_NAME || true
+export ENGINE_PIN_FILE="$PACKAGING_DIR/engine-pin"
+committed="$(rgui_engine_pin)"
+assert_eq "committed engine-pin is 0.1.30" "$committed" "0.1.30"
+cargo_tag="$(
+    grep -E '^ratarmount-session = \{' "$ROOT/native/Cargo.toml" \
+        | grep -oE 'tag = "v[^"]+"' \
+        | head -n 1 \
+        | sed 's/tag = "v//;s/"$//'
+)"
+assert_eq "engine-pin matches native/Cargo.toml session tag" "$committed" "$cargo_tag"
 
 echo ""
 echo "Results: ${pass} passed, ${fail} failed"
