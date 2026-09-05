@@ -34,6 +34,22 @@ impl ErrorCode {
         }
     }
 
+    pub fn from_wire(code: &str) -> Self {
+        match code {
+            "NotFound" => Self::NotFound,
+            "NotWritable" => Self::NotWritable,
+            "SiblingNotWritable" => Self::SiblingNotWritable,
+            "BadPassword" => Self::BadPassword,
+            "UnsupportedFormat" => Self::UnsupportedFormat,
+            "CorruptIndex" => Self::CorruptIndex,
+            "Cancelled" => Self::Cancelled,
+            "PreviewTooLarge" => Self::PreviewTooLarge,
+            "PathEscape" => Self::PathEscape,
+            "Busy" => Self::Busy,
+            _ => Self::Internal,
+        }
+    }
+
     pub fn retryable(self) -> bool {
         matches!(
             self,

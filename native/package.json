@@ -2,6 +2,7 @@
   "name": "ratarmount-native",
   "version": "0.1.0",
   "private": true,
+  "description": "napi build --features napi-addon adds to default features (includes session). Do not pass --no-default-features.",
   "type": "module",
   "main": "index.js",
   "types": "index.d.ts",

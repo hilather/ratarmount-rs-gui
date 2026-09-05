@@ -11,7 +11,7 @@ use crate::session::{
     index_progress_event, session_feature_enabled, unresolved_index_display, EngineSession,
     ExtractRequest, IndexJob, IndexProgress, OpenRequest, INDEX_DEBUG_PREFIX,
 };
-use crate::state::{JobKind, NativeApp};
+use crate::state::{JobKind, JobStatus, NativeApp};
 use crate::types::{ExtractOpts, IndexPolicy, ListOpts, OpenOpts, OpenOutcome, Recreate};
 use crate::ustar_fixture::{
     count_ustar_regular_files, member_body, member_name, write_thousand_member_tar, write_ustar,
@@ -60,7 +60,7 @@ fn open_request(source: &Path) -> OpenRequest {
         extra_dirs: Vec::new(),
         recursive: false,
         recursion_depth: None,
-        recreate: Recreate::Never,
+        recreate: Recreate::IfInvalid,
         password: None,
     }
 }
@@ -164,6 +164,7 @@ fn extract_one_file_to_temp_dir_from_rust() {
                     members: vec![format!("/{}", member_name(0))],
                     dest_dir: dest.clone(),
                     overwrite,
+                    allow_unsafe_paths: false,
                 },
             )
             .expect_err("stub extract_to");
@@ -181,8 +182,9 @@ fn extract_one_file_to_temp_dir_from_rust() {
 #[test]
 fn extract_to_takes_dest_dir_not_member_bytes() {
     let src = include_str!("session.rs");
+    let types = include_str!("types.rs");
     assert!(src.contains("pub dest_dir: PathBuf"));
-    assert!(src.contains("pub password: Option<String>"));
+    assert!(types.contains("pub password: Option<String>"));
     assert!(src.contains("pub fn extract_to"));
     assert!(!src.contains("-> Vec<u8>"));
     assert!(!src.contains("fn read_all(") && !src.contains("fn readAll("));
@@ -213,22 +215,81 @@ fn production_open_never_is_engine_todo() {
     assert!(!cfg.contains(SECRET));
     match outcome {
         Ok(OpenOutcome::Session { session_id }) => {
-            assert!(app.has_session(session_id));
+            panic!(
+                "open(never) on a sidecar-less fixture must not succeed, got session {session_id}"
+            );
         }
         Ok(OpenOutcome::Job { job_id }) => {
-            panic!("open(never) returned job {job_id}; expected a session");
+            panic!("open(never) returned job {job_id}; expected NotFound");
         }
         Err(err) => {
-            assert!(
-                !session_feature_enabled(),
-                "feature `session` is enabled; production open(never) must succeed via Session. got {err}"
-            );
-            assert_engine_todo(&err, "Session::open");
-            assert!(log.contains("TODO(engine)"));
-            assert!(log.contains("resolve_index"));
+            if session_feature_enabled() {
+                assert_eq!(err.code, ErrorCode::NotFound);
+                assert!(!log.contains("TODO(engine)"));
+                assert_ne!(err.code, ErrorCode::SiblingNotWritable);
+            } else {
+                assert_engine_todo(&err, "Session::open");
+                assert!(log.contains("TODO(engine)"));
+                assert!(log.contains("resolve_index"));
+            }
             assert!(!log.contains("local-index-v1"));
         }
     }
+
+    if !session_feature_enabled() {
+        return;
+    }
+    let tmp = TempTree::new("never-seeded");
+    let tar = tmp.path().join("hello.tar");
+    fs::copy(crate::paths::fixture_hello_tar(), &tar).unwrap();
+    let mut app = NativeApp::production();
+    let outcome = app
+        .open(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::IfInvalid,
+            password: None,
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("seed sidecar");
+    let session_id = match outcome {
+        OpenOutcome::Session { session_id } => session_id,
+        OpenOutcome::Job { job_id } => {
+            let events = app.take_events();
+            events
+                .iter()
+                .find_map(|e| match e {
+                    Event::JobSucceeded {
+                        job_id: id,
+                        session_id: Some(session_id),
+                    } if *id == job_id => Some(*session_id),
+                    _ => None,
+                })
+                .expect("seed jobSucceeded")
+        }
+    };
+    app.close(session_id).unwrap();
+    let mut app = NativeApp::production();
+    let outcome = app
+        .open(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::Never,
+            password: None,
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("seeded never");
+    let OpenOutcome::Session { session_id } = outcome else {
+        panic!("seeded open(never) must return sessionId");
+    };
+    assert!(app.has_session(session_id));
+    let log = app.last_index_debug_log().expect("success log");
+    assert!(log.starts_with(INDEX_DEBUG_PREFIX));
+    assert!(!log.contains("TODO(engine)"));
 }
 
 #[test]
@@ -248,23 +309,24 @@ fn production_open_if_invalid_starts_index_job_then_fails_todo() {
         })
         .expect("job id");
     if session_feature_enabled() {
-        let session_id = match outcome {
-            OpenOutcome::Session { session_id } => session_id,
-            OpenOutcome::Job { job_id } => {
-                let events = app.take_events();
-                let session_id = events.iter().find_map(|e| match e {
-                    Event::JobSucceeded {
-                        job_id: id,
-                        session_id: Some(session_id),
-                    } if *id == job_id => Some(*session_id),
-                    _ => None,
-                });
-                session_id.unwrap_or_else(|| {
-                    panic!("session feature: IndexJob must succeed with a session, got {events:?}")
-                })
-            }
+        let OpenOutcome::Job { job_id } = outcome else {
+            panic!("if-invalid must return {{ jobId }} even on a warm sidecar");
         };
+        let events = app.take_events();
+        let session_id = events
+            .iter()
+            .find_map(|e| match e {
+                Event::JobSucceeded {
+                    job_id: id,
+                    session_id: Some(session_id),
+                } if *id == job_id => Some(*session_id),
+                _ => None,
+            })
+            .unwrap_or_else(|| {
+                panic!("session feature: IndexJob must succeed with a session, got {events:?}")
+            });
         assert!(app.has_session(session_id));
+        assert_eq!(app.job_session(job_id), Some(session_id));
         let page = app
             .list(ListOpts {
                 session_id,
@@ -311,6 +373,71 @@ fn cancel_sets_job_token() {
         events.last(),
         Some(Event::JobCancelled { job_id: id }) if *id == job_id
     ));
+}
+
+#[test]
+fn regression_cancel_before_index_worker_discards_pending_open_password() {
+    // Regression: cancel of a deferred cold open left the password in JobState.pending_open.
+    if !session_feature_enabled() {
+        return;
+    }
+    const SECRET: &str = "s3cret-cancel-open";
+    let tmp = TempTree::new("cancel-pw");
+    let tar = tmp.path().join("hello.tar");
+    fs::copy(crate::paths::fixture_hello_tar(), &tar).unwrap();
+    let mut app = NativeApp::production();
+    let outcome = app
+        .open_defer_index_job(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::IfInvalid,
+            password: Some(SECRET.into()),
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("deferred job");
+    let OpenOutcome::Job { job_id } = outcome else {
+        panic!("if-invalid must return jobId");
+    };
+    assert!(app.job_has_pending_open(job_id));
+    app.cancel(job_id).unwrap();
+    assert!(!app.job_has_pending_open(job_id));
+    let debug = app.job_debug(job_id).expect("job");
+    assert!(!debug.contains(SECRET));
+    assert!(app.take_open_work(job_id).is_none());
+}
+
+#[test]
+fn take_open_work_discards_password_when_job_not_running() {
+    if !session_feature_enabled() {
+        return;
+    }
+    const SECRET: &str = "s3cret-stale-open";
+    let tmp = TempTree::new("stale-pw");
+    let tar = tmp.path().join("hello.tar");
+    fs::copy(crate::paths::fixture_hello_tar(), &tar).unwrap();
+    let mut app = NativeApp::production();
+    let outcome = app
+        .open_defer_index_job(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::IfInvalid,
+            password: Some(SECRET.into()),
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("deferred job");
+    let OpenOutcome::Job { job_id } = outcome else {
+        panic!("if-invalid must return jobId");
+    };
+    app.force_job_status(job_id, JobStatus::Cancelled);
+    assert!(app.job_has_pending_open(job_id));
+    assert!(app.take_open_work(job_id).is_none());
+    assert!(!app.job_has_pending_open(job_id));
+    let debug = app.job_debug(job_id).expect("job");
+    assert!(!debug.contains(SECRET));
 }
 
 #[test]
@@ -374,6 +501,7 @@ fn engine_session_and_index_job_are_send() {
 #[test]
 fn native_cargo_toml_does_not_import_binary_crate() {
     let toml = include_str!("../Cargo.toml");
+    let mut session_dep = String::new();
     for line in toml.lines() {
         let trimmed = line.trim();
         if trimmed.starts_with('#') {
@@ -383,15 +511,28 @@ fn native_cargo_toml_does_not_import_binary_crate() {
             !trimmed.starts_with("ratarmount ") && !trimmed.starts_with("ratarmount="),
             "do not import the ratarmount binary crate: {trimmed}"
         );
-        for banned in ["fuse", "nfs", "smb", "http"] {
-            if trimmed.contains("ratarmount-session") {
-                assert!(
-                    !trimmed.contains(banned),
-                    "session pin must not enable {banned}: {trimmed}"
-                );
-            }
+        if trimmed.starts_with("ratarmount-session") {
+            session_dep.push_str(trimmed);
+            session_dep.push('\n');
         }
     }
+    assert!(
+        !session_dep.is_empty(),
+        "native/Cargo.toml must pin ratarmount-session"
+    );
+    assert!(
+        session_dep.contains("default-features = false"),
+        "session pin must disable default features: {session_dep}"
+    );
+    assert!(
+        !session_dep.contains("http-export"),
+        "session pin must not enable http-export: {session_dep}"
+    );
+    let without_default = session_dep.replace("default-features", "");
+    assert!(
+        !without_default.contains("features"),
+        "session extra allowlist must stay empty (ban fuse/nfs/smb/http features, not the https URL): {session_dep}"
+    );
 }
 
 #[test]
@@ -416,4 +557,148 @@ fn ustar_writer_round_trip_counts_two_files() {
     )
     .unwrap();
     assert_eq!(count_ustar_regular_files(&path).unwrap(), 2);
+}
+
+fn production_session_id(app: &mut NativeApp, tar: &Path) -> u32 {
+    let outcome = app
+        .open(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::IfInvalid,
+            password: None,
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("open");
+    match outcome {
+        OpenOutcome::Session { session_id } => session_id,
+        OpenOutcome::Job { job_id } => app
+            .take_events()
+            .into_iter()
+            .find_map(|e| match e {
+                Event::JobSucceeded {
+                    job_id: id,
+                    session_id: Some(session_id),
+                } if id == job_id => Some(session_id),
+                _ => None,
+            })
+            .expect("jobSucceeded session"),
+    }
+}
+
+#[test]
+fn engine_list_missing_path_is_not_found() {
+    if !session_feature_enabled() {
+        return;
+    }
+    let tmp = TempTree::new("missing-dir");
+    let tar = thousand_tar(tmp.path());
+    let mut app = NativeApp::production();
+    let session_id = production_session_id(&mut app, &tar);
+    let err = app
+        .list(ListOpts {
+            session_id,
+            path: "/no-such-dir".into(),
+            cursor: None,
+            limit: Some(50),
+        })
+        .expect_err("missing path");
+    assert_eq!(err.code, ErrorCode::NotFound);
+}
+
+#[test]
+fn engine_list_rejects_wrong_kind_cursors_and_round_trips_colon_name() {
+    if !session_feature_enabled() {
+        return;
+    }
+    let tmp = TempTree::new("colon-cursor");
+    let tar = tmp.path().join("colon.tar");
+    write_ustar(
+        &tar,
+        &[
+            ("a:b%.txt", b"one\n".as_slice()),
+            ("c.txt", b"two\n".as_slice()),
+        ],
+    )
+    .unwrap();
+    let mut app = NativeApp::production();
+    let session_id = production_session_id(&mut app, &tar);
+    let err = app
+        .list(ListOpts {
+            session_id,
+            path: "/".into(),
+            cursor: Some("kset:/:1".into()),
+            limit: Some(1),
+        })
+        .expect_err("kset");
+    assert_eq!(err.code, ErrorCode::Internal);
+    let err = app
+        .list(ListOpts {
+            session_id,
+            path: "/".into(),
+            cursor: Some("f1:a".into()),
+            limit: Some(1),
+        })
+        .expect_err("f1");
+    assert_eq!(err.code, ErrorCode::Internal);
+
+    let page1 = app
+        .list(ListOpts {
+            session_id,
+            path: "/".into(),
+            cursor: None,
+            limit: Some(1),
+        })
+        .expect("page 1");
+    assert_eq!(page1.entries.len(), 1);
+    assert_eq!(page1.entries[0].name, "a:b%.txt");
+    let cursor = page1.next_cursor.expect("next cursor");
+    assert!(cursor.starts_with("d1:"));
+    assert!(
+        cursor.contains("%3A"),
+        "colon in name must be percent-encoded: {cursor}"
+    );
+    assert!(
+        cursor.contains("%25"),
+        "percent in name must be percent-encoded: {cursor}"
+    );
+    let page2 = app
+        .list(ListOpts {
+            session_id,
+            path: "/".into(),
+            cursor: Some(cursor),
+            limit: Some(1),
+        })
+        .expect("page 2");
+    assert_eq!(page2.entries.len(), 1);
+    assert_eq!(page2.entries[0].name, "c.txt");
+}
+
+#[test]
+fn for_test_open_stays_fake_and_does_not_write_sidecar() {
+    let tmp = TempTree::new("fake-reg");
+    let tar = tmp.path().join("hello.tar");
+    fs::copy(crate::paths::fixture_hello_tar(), &tar).unwrap();
+    let mut app = NativeApp::for_test();
+    let outcome = app
+        .open(OpenOpts {
+            source: tar.to_string_lossy().into_owned(),
+            policy: IndexPolicy::Sibling,
+            explicit_path: None,
+            recreate: Recreate::Never,
+            password: None,
+            recursive: None,
+            recursion_depth: None,
+        })
+        .expect("fake open");
+    let OpenOutcome::Session { session_id } = outcome else {
+        panic!("for_test open(never) must return a fake session");
+    };
+    assert!(app.session_is_fake(session_id));
+    let sidecar = fs::read_dir(tmp.path())
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().contains(".index"));
+    assert!(!sidecar, "fake catalog must not write a sidecar");
 }

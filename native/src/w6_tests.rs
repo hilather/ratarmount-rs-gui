@@ -348,6 +348,70 @@ fn index_only_opens_and_closes() {
     assert!(!app.has_session(1));
 }
 
+#[test]
+fn production_index_only_leaves_sidecar_and_drops_handle() {
+    if !crate::session::session_feature_enabled() {
+        return;
+    }
+    let tmp = TempTree::new("prod-index-only");
+    let archive = tmp.path().join("hello.tar");
+    fs::copy(fixture_hello_tar(), &archive).unwrap();
+    let intent = parse_argv(["--index-only", archive.to_string_lossy().as_ref()]).unwrap();
+    let mut app = NativeApp::production();
+    app.apply_launch(&intent, || None)
+        .expect("production --index-only");
+    assert!(!app.has_session(1));
+    let sidecar = fs::read_dir(tmp.path())
+        .unwrap()
+        .flatten()
+        .any(|e| e.file_name().to_string_lossy().contains(".index"));
+    assert!(
+        sidecar,
+        "index-only must leave a 0.7.x sidecar next to the archive"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn production_index_only_propagates_sibling_not_writable() {
+    if !crate::session::session_feature_enabled() {
+        return;
+    }
+    use std::os::unix::fs::PermissionsExt;
+
+    let tmp = TempTree::new("index-only-ro");
+    let archive = tmp.path().join("hello.tar");
+    fs::copy(fixture_hello_tar(), &archive).unwrap();
+    let parent = tmp.path().to_path_buf();
+    let orig_mode = fs::metadata(&parent).unwrap().permissions().mode();
+    struct RestoreMode {
+        path: PathBuf,
+        mode: u32,
+    }
+    impl Drop for RestoreMode {
+        fn drop(&mut self) {
+            let _ = fs::set_permissions(&self.path, fs::Permissions::from_mode(self.mode));
+        }
+    }
+    let _restore = RestoreMode {
+        path: parent.clone(),
+        mode: orig_mode,
+    };
+    fs::set_permissions(&parent, fs::Permissions::from_mode(0o555)).unwrap();
+    let probe = parent.join(".rgui-write-probe");
+    if fs::File::create(&probe).is_ok() {
+        let _ = fs::remove_file(&probe);
+        return;
+    }
+    let intent = parse_argv(["--index-only", archive.to_string_lossy().as_ref()]).unwrap();
+    let mut app = NativeApp::production();
+    let err = app
+        .apply_launch(&intent, || None)
+        .expect_err("unwritable sibling");
+    assert_eq!(err.code, ErrorCode::SiblingNotWritable);
+    assert!(err.retryable());
+}
+
 const ARGV_VECTORS: &str = include_str!("../tests/argv-vectors.txt");
 
 struct ArgvVector {

@@ -577,27 +577,52 @@ pub fn open(env: Env, opts: JsOpenOpts) -> Result<JsOpenResult> {
     let source = opts.source;
     let policy = parse_policy(&opts.policy).map_err(|e| napi_err(env, e))?;
     let recreate = parse_recreate(&opts.recreate).map_err(|e| napi_err(env, e))?;
-    with_app(env, |app| {
-        let outcome = app.open(OpenOpts {
-            source,
-            policy,
-            explicit_path: opts.explicit_path,
-            recreate,
-            password: opts.password,
-            recursive: opts.recursive,
-            recursion_depth: opts.recursion_depth,
-        })?;
-        Ok(match outcome {
-            OpenOutcome::Session { session_id } => JsOpenResult {
-                session_id: Some(session_id),
-                job_id: None,
+    let (result, spawn_job_id) = with_app(env, |app| {
+        let outcome = if app.fake_or_test() {
+            app.open(OpenOpts {
+                source,
+                policy,
+                explicit_path: opts.explicit_path,
+                recreate,
+                password: opts.password,
+                recursive: opts.recursive,
+                recursion_depth: opts.recursion_depth,
+            })?
+        } else {
+            app.open_defer_index_job(OpenOpts {
+                source,
+                policy,
+                explicit_path: opts.explicit_path,
+                recreate,
+                password: opts.password,
+                recursive: opts.recursive,
+                recursion_depth: opts.recursion_depth,
+            })?
+        };
+        let spawn_job_id = match &outcome {
+            OpenOutcome::Job { job_id } if !app.fake_or_test() => Some(*job_id),
+            _ => None,
+        };
+        Ok((
+            match outcome {
+                OpenOutcome::Session { session_id } => JsOpenResult {
+                    session_id: Some(session_id),
+                    job_id: None,
+                },
+                OpenOutcome::Job { job_id } => JsOpenResult {
+                    session_id: None,
+                    job_id: Some(job_id),
+                },
             },
-            OpenOutcome::Job { job_id } => JsOpenResult {
-                session_id: None,
-                job_id: Some(job_id),
-            },
-        })
-    })
+            spawn_job_id,
+        ))
+    })?;
+    if let Some(job_id) = spawn_job_id {
+        std::thread::spawn(move || {
+            run_index_job_unlocked(job_id);
+        });
+    }
+    Ok(result)
 }
 
 #[napi]
@@ -687,6 +712,70 @@ pub fn extract(env: Env, opts: JsExtractOpts) -> Result<JsJobId> {
         run_extract_job_unlocked(job_id);
     });
     Ok(JsJobId { job_id })
+}
+
+fn run_index_job_unlocked(job_id: u32) {
+    let work = {
+        let mut app = global_app().lock().expect("native state mutex poisoned");
+        app.take_open_work(job_id)
+    };
+    let Some((req, cancel)) = work else {
+        return;
+    };
+    #[cfg(feature = "session")]
+    {
+        let source = req.source.clone();
+        let policy = req.policy;
+        let explicit_path = req.explicit_path.clone();
+        let extra_dirs = req.extra_dirs.clone();
+        let on_progress = std::sync::Arc::new(move |progress: crate::session::IndexProgress| {
+            let mut app = global_app().lock().expect("native state mutex poisoned");
+            if app
+                .jobs
+                .get(&job_id)
+                .is_some_and(|job| job.status == crate::state::JobStatus::Running)
+            {
+                app.emit(crate::session::index_progress_event(job_id, &progress));
+            }
+            let events = app.take_events();
+            drop(app);
+            dispatch_events(events);
+        });
+        let result = crate::session::run_open_with_job(req, cancel, on_progress);
+        let mut app = global_app().lock().expect("native state mutex poisoned");
+        crate::session::complete_open_job(
+            &mut app,
+            job_id,
+            source,
+            policy,
+            explicit_path,
+            extra_dirs,
+            result,
+        );
+        let events = app.take_events();
+        drop(app);
+        dispatch_events(events);
+    }
+    #[cfg(not(feature = "session"))]
+    {
+        let _ = (req, cancel);
+        let mut app = global_app().lock().expect("native state mutex poisoned");
+        let err = crate::session::engine_unavailable("IndexJob progress loop");
+        if let Some(job) = app.jobs.get_mut(&job_id) {
+            if job.status == crate::state::JobStatus::Running {
+                job.status = crate::state::JobStatus::Failed;
+                app.emit(crate::events::Event::JobFailed {
+                    job_id,
+                    code: err.code.as_str().to_string(),
+                    retryable: err.code.retryable(),
+                    message: err.message,
+                });
+            }
+        }
+        let events = app.take_events();
+        drop(app);
+        dispatch_events(events);
+    }
 }
 
 fn run_extract_job_unlocked(job_id: u32) {

@@ -6,7 +6,7 @@ All commands are async. Large work returns `{ jobId }` and completes via events.
 
 W1 stubs: the compiled addon is synchronous (`#[napi] fn`, not `async fn`). JS `await cmd()` still works. Long index/extract work in W2+ must return `{ jobId }` before running on a worker — do not block the GPUI/Bun thread.
 
-W2: `RGUI_FAKE=1` / test mode still use the in-memory catalog. Production `open` uses the Session adapter. Until `ratarmount-session` exists, `recreate: 'never'` throws `{ code: 'Internal', retryable: false }` with a `TODO(engine)` message; `if-invalid` / `always` return `{ jobId }` then `jobFailed` with that same shape (cancel token is set on `cancel(jobId)`). No `readAll`. No member bytes on the napi surface.
+W2: `RGUI_FAKE=1` / test mode still use the in-memory catalog. Production `open` uses in-process `ratarmount-session` 0.1.30. `recreate: 'never'` is a synchronous `sessionId` (`NotFound` if the sidecar is missing; `CorruptIndex` on mismatch). `if-invalid` / `always` **always return `{ jobId }` even when the sidecar is reused** (the engine may emit no Scan ticks); `sessionId` arrives on `jobSucceeded`. Cold `open_with_job` runs on a worker without holding `Mutex<NativeApp>`. Cancel token is set on `cancel(jobId)`. No `readAll`. No member bytes on the napi surface.
 
 There is **no** `readAll` command. Do not add one.
 
@@ -117,7 +117,8 @@ open(opts: {
   recursive?: boolean          // v1 default false (non-recursive)
   recursionDepth?: number      // only if recursive; omit ⇒ engine default depth
 }): Promise<{ sessionId: SessionId } | { jobId: JobId }>
-// If an index must be built, returns jobId first; sessionId arrives on jobSucceeded.
+// `never` returns sessionId (or throws). `if-invalid` / `always` always return jobId first
+// even on a warm sidecar; sessionId arrives on jobSucceeded.
 
 close(sessionId: SessionId): Promise<void>
 
@@ -211,7 +212,7 @@ startFileDropWatch(): Promise<void>
 on('fileDrop', (e: { paths: string[] }) => {})
 ```
 
-`preview` image path: native decodes and resizes to ≤ 2048px on the long edge **in Rust**, then returns a PNG no larger than `preview.maxBytes` (already clamped). If that cannot be done, `skipped`.
+`preview` image path: **not implemented**. Native `PreviewKind` is `Text | Skipped` only; non-text is `skipped: unknown`. Do not decode images in JS.
 
 `preview` text path: read min(file_size, preview.maxBytes), lossy UTF-8.
 

@@ -28,6 +28,19 @@ jobs:
         run: cargo check -p native --lib --features napi-addon
       - name: Test
         run: cargo test -p native
+      - name: Fuse-free session graph
+        run: |
+          set -euo pipefail
+          assert_absent() {
+            local tree
+            tree="$(cargo tree -p native "$@" -e normal --prefix none -f '{p}')" || exit 1
+            if printf '%s\n' "$tree" | grep -E '^(fuser|ratarmount-fuse|ratarmount-nfs|ratarmount-smb|ratarmount-http)($| )' >/dev/null; then
+              echo "banned crate in graph" >&2
+              exit 1
+            fi
+          }
+          assert_absent
+          assert_absent --features napi-addon
       - name: Self-test
         run: cargo run -p native -- --self-test
 
