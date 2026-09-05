@@ -144,9 +144,21 @@ impl EngineSession {
 
     #[allow(dead_code)]
     pub fn find(&self, opts: &FindOpts) -> Result<FindPage> {
-        let _ = opts;
-        // TODO(engine): Session::find (G3.1/G3.2) — paged glob/FTS, never dump 2M hits.
-        Err(engine_unavailable("Session::find"))
+        #[cfg(feature = "session")]
+        {
+            engine_find(
+                &self.inner,
+                &opts.pattern,
+                &opts.mode,
+                opts.cursor.as_deref(),
+                crate::catalog::clamp_limit(opts.limit) as u32,
+            )
+        }
+        #[cfg(not(feature = "session"))]
+        {
+            let _ = opts;
+            Err(engine_unavailable("Session::find"))
+        }
     }
 
     #[allow(dead_code)]
@@ -699,6 +711,41 @@ pub fn lookup_backend(
     }
 }
 
+pub fn find_backend(
+    backend: &SessionBackend,
+    pattern: &str,
+    mode: &str,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<FindPage> {
+    match mode {
+        "glob" | "fts" => {}
+        other => {
+            return Err(ApiError::internal(format!("unknown find mode '{other}'")));
+        }
+    }
+    match backend {
+        SessionBackend::Fake(catalog) => {
+            let key = format!("{pattern}|{mode}");
+            let start = match cursor {
+                Some(cursor) => crate::catalog::decode_cursor(cursor, &key)?,
+                None => 0,
+            };
+            let (entries, next, total) = catalog.find_page(pattern, mode, start, limit as usize);
+            let next_cursor = next.map(|idx| crate::catalog::encode_cursor(&key, idx));
+            Ok(FindPage {
+                pattern: pattern.to_string(),
+                mode: mode.to_string(),
+                entries,
+                next_cursor,
+                total_hint: Some(total),
+            })
+        }
+        #[cfg(feature = "session")]
+        SessionBackend::Engine(session) => engine_find(session, pattern, mode, cursor, limit),
+    }
+}
+
 #[cfg(feature = "session")]
 fn engine_list(
     session: &ratarmount_session::Session,
@@ -730,6 +777,43 @@ fn engine_lookup(
         .lookup(path)
         .map(|ent| ent.map(map_dirent))
         .map_err(map_engine_error)
+}
+
+#[cfg(feature = "session")]
+fn engine_find(
+    session: &ratarmount_session::Session,
+    pattern: &str,
+    mode: &str,
+    cursor: Option<&str>,
+    limit: u32,
+) -> Result<FindPage> {
+    let fts = match mode {
+        "glob" => false,
+        "fts" => true,
+        other => {
+            return Err(ApiError::internal(format!("unknown find mode '{other}'")));
+        }
+    };
+    let opts = ratarmount_session::FindOpts {
+        fts,
+        offset_order: false,
+        include_hashes: false,
+        fill_hashes: Vec::new(),
+        limit,
+        cursor: decode_find_cursor(cursor)?,
+    };
+    let page = session.find(pattern, opts).map_err(map_engine_error)?;
+    Ok(FindPage {
+        pattern: page.pattern,
+        mode: if page.fts {
+            "fts".to_string()
+        } else {
+            "glob".to_string()
+        },
+        entries: page.entries.into_iter().map(map_dirent).collect(),
+        next_cursor: page.next_cursor.and_then(encode_find_cursor),
+        total_hint: page.total_hint.map(saturate_i64),
+    })
 }
 
 #[cfg(feature = "session")]
@@ -816,6 +900,48 @@ fn encode_dir_cursor(cursor: ratarmount_session::DirCursor) -> Option<String> {
         ratarmount_session::DirCursor::Start => None,
         ratarmount_session::DirCursor::AfterName { name } => {
             Some(format!("d1:{}", percent_encode(&name)))
+        }
+    }
+}
+
+/// Opaque `f1:` + percent-encoded path + `:` + offsetheader decimal (empty if None).
+/// Split on the last literal `:`; `:` inside the path is `%3A`.
+#[cfg(feature = "session")]
+fn decode_find_cursor(cursor: Option<&str>) -> Result<ratarmount_session::FindCursor> {
+    match cursor {
+        None => Ok(ratarmount_session::FindCursor::Start),
+        Some(s) => {
+            let Some(rest) = s.strip_prefix("f1:") else {
+                return Err(ApiError::internal("invalid cursor"));
+            };
+            let Some((path_enc, offset)) = rest.rsplit_once(':') else {
+                return Err(ApiError::internal("invalid cursor"));
+            };
+            let path = percent_decode(path_enc)?;
+            let offsetheader = if offset.is_empty() {
+                None
+            } else {
+                Some(
+                    offset
+                        .parse::<i64>()
+                        .map_err(|_| ApiError::internal("invalid cursor"))?,
+                )
+            };
+            Ok(ratarmount_session::FindCursor::AfterPath { path, offsetheader })
+        }
+    }
+}
+
+#[cfg(feature = "session")]
+fn encode_find_cursor(cursor: ratarmount_session::FindCursor) -> Option<String> {
+    match cursor {
+        ratarmount_session::FindCursor::Start => None,
+        ratarmount_session::FindCursor::AfterPath { path, offsetheader } => {
+            let offset = match offsetheader {
+                Some(n) => n.to_string(),
+                None => String::new(),
+            };
+            Some(format!("f1:{}:{}", percent_encode(&path), offset))
         }
     }
 }

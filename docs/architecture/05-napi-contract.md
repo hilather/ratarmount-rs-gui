@@ -136,8 +136,12 @@ find(opts: {
   pattern: string
   mode: 'glob' | 'fts'
   cursor?: Cursor
-  limit?: number
+  limit?: number          // default 200, max 500
 }): Promise<FindPage>
+// Production: Session::find, paged. Opaque `f1:` cursors (not `d1:` list, not fake `kset:`).
+// Wrong-kind cursor → Internal. `mode: 'fts'` is opt-in (`FindOpts.fts`); never a side
+// effect of `open`. `totalHint` may be null. Fake catalog still backs RGUI_FAKE=1 / tests.
+// Do not dump 2M hits.
 
 preview(opts: {
   sessionId: SessionId

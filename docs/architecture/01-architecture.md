@@ -89,7 +89,7 @@ These are **buttons**, implemented by calling the engine — not by the UI prete
 | Share via HTTP | `Session::start_http(bind)` if G5.4 exists; else spawn `ratarmount --http --no-fuse…` |
 | Unmount / stop share | matching stop API or `ratarmount -u` |
 
-If the CLI binary is absent, hide those actions. `probeFeatures()` returns `{ fuse, http }`; the toolbar omits the buttons when a flag is false. FUSE probe also fails without fuse3 / macFUSE. Engine G3 paged `find` is stubbed against the fake catalog (`TODO(engine)`). File-manager drops onto the window arrive as napi `fileDrop` (`startFileDropWatch`) on **Linux X11** only; GPUIX 0.6 has no React `onDrop`. Wayland/macOS/Windows: picker / argv / recent.
+If the CLI binary is absent, hide those actions. `probeFeatures()` returns `{ fuse, http }`; the toolbar omits the buttons when a flag is false. FUSE probe also fails without fuse3 / macFUSE. Engine G3 paged `find` is `Session::find` (opaque `f1:` cursors; fake catalog still backs `RGUI_FAKE=1` / tests). File-manager drops onto the window arrive as napi `fileDrop` (`startFileDropWatch`) on **Linux X11** only; GPUIX 0.6 has no React `onDrop`. Wayland/macOS/Windows: picker / argv / recent.
 
 ## Failure domains
 
@@ -110,4 +110,4 @@ If the CLI binary is absent, hide those actions. `probeFeatures()` returns `{ fu
 
 Native crate exposes the same commands to a headless harness (`native --self-test`) so waves can land without GPUIX. UI tests use GPUIX automation (`getByTestId`) against fixtures, never against a 40 GiB archive in CI.
 
-`native` pins `ratarmount-session` 0.1.30 (`default-features = false`, empty extra allowlist; never fuse/nfs/smb/http-export). Feature `session` is **default-on**. `RGUI_FAKE=1` / `NativeApp::for_test()` still serve the in-memory catalog. Production `open` / `list` / `lookup` / `close` / index jobs use `Session::open` / `open_with_job`. Extract, text preview, and `find` on real sessions land in follow-on PRs.
+`native` pins `ratarmount-session` 0.1.30 (`default-features = false`, empty extra allowlist; never fuse/nfs/smb/http-export). Feature `session` is **default-on**. `RGUI_FAKE=1` / `NativeApp::for_test()` still serve the in-memory catalog. Production `open` / `list` / `lookup` / `find` / `close` / index jobs use `Session`. Extract and text preview of real members land in a follow-on PR.

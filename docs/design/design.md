@@ -20,7 +20,7 @@ This document synthesizes the planning pack at `/home/brewerm/Downloads/ratarmou
 
 `ratarmount-rs-gui` is a native GPU-rendered desktop archive explorer. The UI process is GPUIX (React reconciled onto Zed GPUI). Index, list, search, preview, and extract run in-process through a napi-rs cdylib that holds `ratarmount-session` (or `ratarmount-core::session` — engine G0.2). There is no Electron, no webview, and no GPUIX browser/Wasm target. Archive bytes, SQLite indexes, and members larger than the preview cap never enter the JavaScript heap as `Uint8Array` / Node `Buffer` / Bun `Blob`.
 
-The engine ships `ratarmount-session` **0.1.30** (this GUI pins the git tag, `default-features = false`). Production open/list/lookup/close/index use `Session`. Extract / preview / find of real members follow in later PRs. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`. Do **not** import the `ratarmount` binary crate.
+The engine ships `ratarmount-session` **0.1.30** (this GUI pins the git tag, `default-features = false`). Production open/list/lookup/find/close/index use `Session`. Extract / preview of real members follow in a later PR. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`. Do **not** import the `ratarmount` binary crate.
 
 **Canonical G-list:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` and `docs/session-api.md`. The snapshot in `docs/engine/gui-embedder-support.md` is historical.
 
