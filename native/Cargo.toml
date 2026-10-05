@@ -26,11 +26,12 @@ session = ["dep:ratarmount-session", "dep:secrecy"]
 napi = { version = "=3.12.2", default-features = false, features = ["napi4", "dyn-symbols"], optional = true }
 napi-derive = { version = "=3.6.3", optional = true }
 rfd = { version = "=0.17.2", default-features = false, features = ["xdg-portal"], optional = true }
-# Engine crates.io policy: session is unpublished; pin the v0.1.30 tag.
+# Engine crates.io policy: session is unpublished; pin the v0.1.34 tag.
 # default-features = false → no formats-all. TAR/ZIP/7z + compress + compositing
-# + ratarmount-remote are always-on in the engine crate (vendored-openssl via ssh2).
+# + ratarmount-remote (vendored-openssl via ssh2) + ratarmount-formats-restic
+# (restic: remote_open scheme, since 0.1.34) are always-on in the engine crate.
 # Allowlist: (empty extras). Do not add formats-all, http-export, gzip-rapidgzip.
-ratarmount-session = { git = "https://github.com/hilather/ratarmount-rs", tag = "v0.1.30", default-features = false, optional = true }
+ratarmount-session = { git = "https://github.com/hilather/ratarmount-rs", tag = "v0.1.34", default-features = false, optional = true }
 # Same caret as engine ratarmount-session (secrecy = "0.8"). Cargo.lock records the
 # exact checksum after the first fetch. Do not use "=0.8.0".
 secrecy = { version = "0.8", optional = true }

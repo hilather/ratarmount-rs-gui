@@ -2,7 +2,7 @@
 
 You are in **ratarmount-rs-gui**, a native GPUIX desktop archive explorer for [ratarmount-rs](https://github.com/hilather/ratarmount-rs).
 
-Status: **production open/list uses `ratarmount-session` 0.1.30**. `cd app && bun install && bun run dev` (rebuild the napi addon) opens a 1100×720 window titled “ratarmount”. Without `RGUI_FAKE=1`, Open on a real TAR builds/reuses a 0.7.x sidecar and lists members. UI tests and `NativeApp::for_test()` still use the fake in-memory catalog. Native: `cargo test -p native` / `cargo run -p native -- --self-test`.
+Status: **production open/list uses `ratarmount-session` 0.1.34**. `cd app && bun install && bun run dev` (rebuild the napi addon) opens a 1100×720 window titled “ratarmount”. Without `RGUI_FAKE=1`, Open on a real TAR builds/reuses a 0.7.x sidecar and lists members. UI tests and `NativeApp::for_test()` still use the fake in-memory catalog. Native: `cargo test -p native` / `cargo run -p native -- --self-test`.
 
 ## Read in this order
 

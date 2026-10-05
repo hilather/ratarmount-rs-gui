@@ -7,7 +7,7 @@
 | **Date** | 2026-08-29 |
 | **Status** | Draft |
 | **Product** | `ratarmount-rs-gui` (spelling: **ratarmount-rs-gui**, not `ratarmout-rs-gui`) |
-| **Engine** | [hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs) **v0.1.30** (`ratarmount-session`) |
+| **Engine** | [hilather/ratarmount-rs](https://github.com/hilather/ratarmount-rs) **v0.1.34** (`ratarmount-session`) |
 | **License** | MIT (same family as the engine; this project’s own 2026 copyright line) |
 | **Repo** | `ratarmount-rs-gui` (documentation seed; no application code in this pass) |
 | **Canonical copy** | This file. Scratch/skill copy: `/tmp/grok-brewerm/grok-design-doc-7e53b722.md` (keep in sync). |
@@ -20,7 +20,7 @@ This document synthesizes the planning pack at `/home/brewerm/Downloads/ratarmou
 
 `ratarmount-rs-gui` is a native GPU-rendered desktop archive explorer. The UI process is GPUIX (React reconciled onto Zed GPUI). Index, list, search, preview, and extract run in-process through a napi-rs cdylib that holds `ratarmount-session` (or `ratarmount-core::session` — engine G0.2). There is no Electron, no webview, and no GPUIX browser/Wasm target. Archive bytes, SQLite indexes, and members larger than the preview cap never enter the JavaScript heap as `Uint8Array` / Node `Buffer` / Bun `Blob`.
 
-The engine ships `ratarmount-session` **0.1.30** (this GUI pins the git tag, `default-features = false`). Production open/list/lookup/find/close/index use `Session`. Extract / preview of real members follow in a later PR. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`. Do **not** import the `ratarmount` binary crate.
+The engine ships `ratarmount-session` **0.1.34** (this GUI pins the git tag, `default-features = false`). Production open/list/lookup/find/close/index use `Session`. Extract / preview of real members follow in a later PR. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`. Do **not** import the `ratarmount` binary crate.
 
 **Canonical G-list:** `ratarmount-rs/docs/tasks/gui-embedder-support.md` and `docs/session-api.md`. The snapshot in `docs/engine/gui-embedder-support.md` is historical.
 
@@ -32,11 +32,11 @@ The engine ships `ratarmount-session` **0.1.30** (this GUI pins the git tag, `de
 
 | Claim | Evidence |
 |---|---|
-| Workspace crates + session crate | Engine **v0.1.30** includes `ratarmount-session`. GUI pins that tag. |
+| Workspace crates + session crate | Engine **v0.1.34** includes `ratarmount-session`. GUI pins that tag. |
 | SQLite 0.7.x index | `ratarmount-index/src/lib.rs`: `INDEX_VERSION = "0.7.0"`; `create-index-tables.sql` is the 0.7.x `files` schema. Interoperable with Python ratarmountcore for TAR/ZIP/7z. |
 | Sibling sidecars | `{archive}.index.ptr` → `{archive}.index.{id}.sqlite`; well-known `{archive}.index.sqlite`. |
 | Remote sidecar cache | `$XDG_CACHE_HOME/ratarmount/meta-v3/`, cap `RATARMOUNT_META_CACHE_BYTES` default 256 MiB. **Exists.** |
-| User-cache `local-index-v1` | Engine 0.1.30 G4.3: `local-index-v1/{sha256}.sqlite` for `IndexPolicy::UserCache`. The GUI must not hash those keys; the badge stays `"user cache"`. |
+| User-cache `local-index-v1` | Engine 0.1.34 G4.3: `local-index-v1/{sha256}.sqlite` for `IndexPolicy::UserCache`. The GUI must not hash those keys; the badge stays `"user cache"`. |
 | Index / find as library | `--no-mount -c` and `ratarmount find` are CLI entry points, not a supported embedder API. |
 | Packaging | `.deb` / `.rpm` / portable glibc 2.31 tarball / macOS arm64 tarball; cosign; Intel macOS deferred (`docs/packaging.md`). |
 | License | MIT, `Copyright (c) 2019-2022 Maximilian Knespel`. GUI uses MIT with a **this-project** 2026 copyright. |
@@ -241,7 +241,7 @@ stateDiagram-v2
 
 ### Index policies
 
-Indexes are SQLite 0.7.x sidecars. The GUI **must not reimplement discovery**. Engine `Session::open` / `resolve_index` (0.1.30) own the location. Putting locally built remote indexes in `local-index-v1` vs `meta-v3` is an **engine** decision. The GUI must not hash `local-index-v1` keys.
+Indexes are SQLite 0.7.x sidecars. The GUI **must not reimplement discovery**. Engine `Session::open` / `resolve_index` (0.1.34) own the location. Putting locally built remote indexes in `local-index-v1` vs `meta-v3` is an **engine** decision. The GUI must not hash `local-index-v1` keys.
 
 **Do not use `/tmp` as the default.** A 2 TiB backup TAR can produce a multi-hundred-megabyte index. `/tmp` is often tmpfs, world-readable, and wiped on reboot. Temp is an explicit policy, not the fallback.
 
@@ -255,7 +255,7 @@ Indexes are SQLite 0.7.x sidecars. The GUI **must not reimplement discovery**. E
 
 `Recreate` is orthogonal: `never` | `if-invalid` | `always`.
 
-**Engine `resolve_index` (0.1.30; GUI consumes it):** explicit path → sibling `.index.ptr` / `.index.sqlite` → `index.extra_dirs` → `user-cache` `local-index-v1/{sha256}.sqlite` → remote `meta-v3` → build at the policy location (not `:memory:` unless policy is `memory`). Sibling + unwritable parent on create → `SiblingNotWritable`. `never` + missing sidecar → `NotFound`. The GUI never sends `CliCompat` (that path still has the legacy flattened `$XDG_CACHE_HOME/ratarmount/` parent and `:memory:` last resort). The GUI must not hash `local-index-v1` keys. Production `open` does not preflight `resolve_index` as a gate.
+**Engine `resolve_index` (0.1.34; GUI consumes it):** explicit path → sibling `.index.ptr` / `.index.sqlite` → `index.extra_dirs` → `user-cache` `local-index-v1/{sha256}.sqlite` → remote `meta-v3` → build at the policy location (not `:memory:` unless policy is `memory`). Sibling + unwritable parent on create → `SiblingNotWritable`. `never` + missing sidecar → `NotFound`. The GUI never sends `CliCompat` (that path still has the legacy flattened `$XDG_CACHE_HOME/ratarmount/` parent and `:memory:` last resort). The GUI must not hash `local-index-v1` keys. Production `open` does not preflight `resolve_index` as a gate.
 
 If policy is `sibling` and the directory is not writable → structured error `SiblingNotWritable` (G4.2). GUI offers “Save index in user cache instead” and remembers per-volume if the user checks “always for this filesystem.”
 

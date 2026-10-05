@@ -19,7 +19,7 @@ The product must browse multi-gigabyte (and larger) TAR/ZIP/7z/compressed archiv
 
 ## Consequences
 
-- Engine session API is `ratarmount-session` 0.1.30 (this repo pins the git tag). Fake catalog remains for UI tests (`RGUI_FAKE=1` / `NativeApp::for_test()`). Production open/list/lookup/close/index use `Session`.
+- Engine session API is `ratarmount-session` 0.1.34 (this repo pins the git tag). Fake catalog remains for UI tests (`RGUI_FAKE=1` / `NativeApp::for_test()`). Production open/list/lookup/close/index use `Session`.
 - Distro packages must not duplicate `/usr/bin/ratarmount`.
 - Code review of `native/` public functions is a hard-rule gate.
 - FUSE remains optional UX; the explorer works without it (including a future Windows library path).

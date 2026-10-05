@@ -1,6 +1,6 @@
 # GUI embedder support — snapshot
 
-> **Canonical (2026-09-04):** engine `ratarmount-rs` **v0.1.30** ships `ratarmount-session`. Treat **`ratarmount-rs/docs/tasks/gui-embedder-support.md`** and **`docs/session-api.md`** as the source of truth. This snapshot is historical (2026-08-29 G0 sketch). GUI production open/list/lookup/close/index use the crate; do not implement against this sketch.
+> **Canonical (2026-10-04):** engine `ratarmount-rs` **v0.1.34** ships `ratarmount-session`. Treat **`ratarmount-rs/docs/tasks/gui-embedder-support.md`** and **`docs/session-api.md`** as the source of truth. This snapshot is historical (2026-08-29 G0 sketch). GUI production open/list/lookup/close/index use the crate; do not implement against this sketch.
 >
 > Implement remaining G-list items in **ratarmount-rs**. Do not paste GPUI / napi code into the engine repo.
 

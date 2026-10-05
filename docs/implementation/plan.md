@@ -4,7 +4,7 @@ This is the **first-class** plan an orchestrator hands to waves of subagents. Po
 
 **Do not** scaffold `app/` or wire `native/` except as W0/W1. Engine G0–G7 are **external** (ratarmount-rs), not PRs in this repository.
 
-The G0–G7 task list is canonical in **ratarmount-rs** (`docs/tasks/gui-embedder-support.md`, `docs/session-api.md`). GUI production open/list uses `ratarmount-session` **0.1.30**. The snapshot in [`../engine/gui-embedder-support.md`](../engine/gui-embedder-support.md) is historical.
+The G0–G7 task list is canonical in **ratarmount-rs** (`docs/tasks/gui-embedder-support.md`, `docs/session-api.md`). GUI production open/list uses `ratarmount-session` **0.1.34**. The snapshot in [`../engine/gui-embedder-support.md`](../engine/gui-embedder-support.md) is historical.
 
 ## Hard rules (every wave)
 

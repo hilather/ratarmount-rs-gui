@@ -6,7 +6,7 @@ All commands are async. Large work returns `{ jobId }` and completes via events.
 
 W1 stubs: the compiled addon is synchronous (`#[napi] fn`, not `async fn`). JS `await cmd()` still works. Long index/extract work in W2+ must return `{ jobId }` before running on a worker — do not block the GPUI/Bun thread.
 
-W2: `RGUI_FAKE=1` / test mode still use the in-memory catalog. Production `open` uses in-process `ratarmount-session` 0.1.30. `recreate: 'never'` is a synchronous `sessionId` (`NotFound` if the sidecar is missing; `CorruptIndex` on mismatch). `if-invalid` / `always` **always return `{ jobId }` even when the sidecar is reused** (the engine may emit no Scan ticks); `sessionId` arrives on `jobSucceeded`. Cold `open_with_job` runs on a worker without holding `Mutex<NativeApp>`. Cancel token is set on `cancel(jobId)`. No `readAll`. No member bytes on the napi surface.
+W2: `RGUI_FAKE=1` / test mode still use the in-memory catalog. Production `open` uses in-process `ratarmount-session` 0.1.34. `recreate: 'never'` is a synchronous `sessionId` (`NotFound` if the sidecar is missing; `CorruptIndex` on mismatch). `if-invalid` / `always` **always return `{ jobId }` even when the sidecar is reused** (the engine may emit no Scan ticks); `sessionId` arrives on `jobSucceeded`. Cold `open_with_job` runs on a worker without holding `Mutex<NativeApp>`. Cancel token is set on `cancel(jobId)`. No `readAll`. No member bytes on the napi surface.
 
 There is **no** `readAll` command. Do not add one.
 

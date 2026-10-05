@@ -110,4 +110,4 @@ If the CLI binary is absent, hide those actions. `probeFeatures()` returns `{ fu
 
 Native crate exposes the same commands to a headless harness (`native --self-test`) so waves can land without GPUIX. UI tests use GPUIX automation (`getByTestId`) against fixtures, never against a 40 GiB archive in CI.
 
-`native` pins `ratarmount-session` 0.1.30 (`default-features = false`, empty extra allowlist; never fuse/nfs/smb/http-export). Feature `session` is **default-on**. `RGUI_FAKE=1` / `NativeApp::for_test()` still serve the in-memory catalog. Production `open` / `list` / `lookup` / `find` / `close` / index jobs use `Session`. Extract and text preview of real members land in a follow-on PR.
+`native` pins `ratarmount-session` 0.1.34 (`default-features = false`, empty extra allowlist; never fuse/nfs/smb/http-export). Feature `session` is **default-on**. `RGUI_FAKE=1` / `NativeApp::for_test()` still serve the in-memory catalog. Production `open` / `list` / `lookup` / `find` / `close` / index jobs use `Session`. Extract and text preview of real members land in a follow-on PR.
