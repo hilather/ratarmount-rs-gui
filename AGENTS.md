@@ -46,7 +46,7 @@ Root `README.md` is a high-level landing page. It must **not** contain wave boar
 
 The **native crate** owns path validation, the preview cap, and the handle table. React must not see archive bytes. Preview hard ceiling is **64 MiB in native** even if the user types a larger number.
 
-The engine crate **`ratarmount-session` 0.1.30** is pinned and default-on. Canonical engine API: `ratarmount-rs/docs/session-api.md` / `docs/tasks/gui-embedder-support.md`. The snapshot in [docs/engine/gui-embedder-support.md](docs/engine/gui-embedder-support.md) is historical. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`.
+The engine crate **`ratarmount-session` 0.1.34** is pinned and default-on. Canonical engine API: `ratarmount-rs/docs/session-api.md` / `docs/tasks/gui-embedder-support.md`. The snapshot in [docs/engine/gui-embedder-support.md](docs/engine/gui-embedder-support.md) is historical. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`.
 
 ## Tests for every fix (non-negotiable)
 
@@ -74,6 +74,7 @@ When you fix a **new** production bug, **add a row** here and ship the test in t
 | Unused `PREVIEW_CEILING_BYTES` import failed clippy `-D warnings` | `cargo clippy -p native --all-targets -- -D warnings` |
 | X11 drop fires after pointer left our window | `cargo test -p native x11_drop_emits_only_when_pointer_still_over_us` |
 | Cancel of deferred cold open left password in `JobState.pending_open` | `cargo test -p native regression_cancel_before_index_worker_discards_pending_open_password` |
+| Engine extract Replace wrote through a pre-existing dest symlink (session <= 0.1.30) | `cargo test -p native regression_extract_replace_unlinks_dest_symlink_not_write_through` |
 
 ## CI is mandatory
 

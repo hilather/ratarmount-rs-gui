@@ -4,7 +4,7 @@ A native GPU-rendered archive explorer that indexes and browses multi-gigabyte T
 
 GPUIX (React + Zed GPUI) in the UI process. `ratarmount-session` in-process for index / list / extract. No Electron. No webview. Archive bytes never enter the JavaScript heap.
 
-**Status:** Production `open` / `list` / `lookup` / close / index jobs / extract / text preview use in-process `ratarmount-session` 0.1.30. `bun run dev` in `app/` (napi addon rebuilt with default features) opens a 1100×720 GPUIX window titled `ratarmount`. Without `RGUI_FAKE=1`, Open on a real TAR builds or reuses a 0.7.x sidecar and pages the catalog; Extract to… and the preview pane read real member bytes (`extract_to` / `read_range`, never `readAll`). Image preview stays skipped (`unknown`). Search of real members still uses the fake catalog until follow-on wiring. `RGUI_FAKE=1` keeps the in-memory catalog for UI tests.
+**Status:** Production `open` / `list` / `lookup` / close / index jobs / extract / text preview use in-process `ratarmount-session` 0.1.34. `bun run dev` in `app/` (napi addon rebuilt with default features) opens a 1100×720 GPUIX window titled `ratarmount`. Without `RGUI_FAKE=1`, Open on a real TAR builds or reuses a 0.7.x sidecar and pages the catalog; Extract to… and the preview pane read real member bytes (`extract_to` / `read_range`, never `readAll`). Image preview stays skipped (`unknown`). Search of real members still uses the fake catalog until follow-on wiring. `RGUI_FAKE=1` keeps the in-memory catalog for UI tests.
 
 Chrome/Electron `ArrayBuffer` and wasm32 linear memory both cap around 2–4 GiB — that is the failure mode this product exists to avoid. The desktop GPUIX build is in scope **only if** React never sees archive bytes. The GPUIX browser/`bun run web` target is out of scope.
 
@@ -30,7 +30,7 @@ v1 will **not** edit archives, ship a hex editor, replace the CLI, target the br
 
 ## Architecture (one paragraph)
 
-One OS process: GPUIX React talks **only** to the napi contract in [`docs/architecture/05-napi-contract.md`](docs/architecture/05-napi-contract.md). The native cdylib owns the session handle table, path validation, and preview cap, and links `ratarmount-session` 0.1.30. SQLite sidecars are the same 0.7.x format the CLI mounts. Distro packages `Depends:` the engine; portable / macOS / Windows artifacts bundle the CLI.
+One OS process: GPUIX React talks **only** to the napi contract in [`docs/architecture/05-napi-contract.md`](docs/architecture/05-napi-contract.md). The native cdylib owns the session handle table, path validation, and preview cap, and links `ratarmount-session` 0.1.34. SQLite sidecars are the same 0.7.x format the CLI mounts. Distro packages `Depends:` the engine; portable / macOS / Windows artifacts bundle the CLI.
 
 Load-bearing decision: [docs/adr/0001-in-process-session.md](docs/adr/0001-in-process-session.md).
 

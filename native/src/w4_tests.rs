@@ -623,6 +623,65 @@ fn production_path_escape_writes_nothing() {
     }
 }
 
+/// Regression: engine `extract_to` (`ratarmount-session` <= 0.1.30) opened a
+/// pre-existing dest symlink with Replace and wrote the member through it,
+/// clobbering the symlink target outside `dest_dir`. 0.1.34 writes a sibling
+/// tmp and renames it onto dest, so the symlink is replaced, not followed.
+#[cfg(unix)]
+#[test]
+fn regression_extract_replace_unlinks_dest_symlink_not_write_through() {
+    let tmp = TempTree::new("prod-dest-symlink");
+    let tar = tmp.path().join("one.tar");
+    write_ustar(&tar, &[("a.txt", b"hello\n".as_slice())]).unwrap();
+    let victim = tmp.path().join("victim.txt");
+    fs::write(&victim, b"original\n").unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    std::os::unix::fs::symlink(&victim, dest.join("a.txt")).unwrap();
+
+    match EngineSession::open(&crate::session::OpenRequest {
+        source: tar.to_string_lossy().into_owned(),
+        policy: IndexPolicy::Sibling,
+        explicit_path: None,
+        extra_dirs: Vec::new(),
+        recursive: false,
+        recursion_depth: None,
+        recreate: Recreate::IfInvalid,
+        password: None,
+    }) {
+        Ok(session) => {
+            extract_to(
+                Some(&session),
+                ExtractRequest {
+                    members: vec!["/a.txt".into()],
+                    dest_dir: dest.clone(),
+                    overwrite: Overwrite::Replace,
+                    allow_unsafe_paths: false,
+                },
+            )
+            .expect("extract_to Replace over dest symlink");
+            assert_eq!(
+                fs::read(&victim).unwrap(),
+                b"original\n",
+                "Replace must not write through a dest symlink"
+            );
+            let meta = fs::symlink_metadata(dest.join("a.txt")).unwrap();
+            assert!(
+                meta.file_type().is_file(),
+                "dest must be a regular file, not the old symlink"
+            );
+            assert_eq!(fs::read(dest.join("a.txt")).unwrap(), b"hello\n");
+            session.close();
+        }
+        Err(err) => {
+            assert!(
+                !session_feature_enabled(),
+                "feature `session` is enabled; EngineSession::open must succeed, got {err}"
+            );
+        }
+    }
+}
+
 #[test]
 fn production_extract_plan_1k_dest_conflicts_samples_50() {
     let tmp = TempTree::new("prod-plan-1k");

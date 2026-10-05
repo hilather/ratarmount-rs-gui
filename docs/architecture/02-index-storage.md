@@ -1,6 +1,6 @@
 # 02 — Index storage
 
-Indexes are SQLite 0.7.x sidecars. The GUI must not invent a second format. **Do not reimplement discovery in this repo.** Engine `ratarmount-session` 0.1.30 `Session::open` / `resolve_index` own the location. The GUI must not hash `local-index-v1` keys. Putting locally built remote indexes in `local-index-v1` vs `meta-v3` is an **engine** decision, not a GUI fork.
+Indexes are SQLite 0.7.x sidecars. The GUI must not invent a second format. **Do not reimplement discovery in this repo.** Engine `ratarmount-session` 0.1.34 `Session::open` / `resolve_index` own the location. The GUI must not hash `local-index-v1` keys. Putting locally built remote indexes in `local-index-v1` vs `meta-v3` is an **engine** decision, not a GUI fork.
 
 ## Do not use /tmp as the default
 
@@ -40,7 +40,7 @@ This is **not** the remote sidecar cache.
 | macOS | `~/Library/Caches/ratarmount/local-index-v1/` |
 | Windows | `%LOCALAPPDATA%\ratarmount\local-index-v1\` |
 
-Key file name (engine 0.1.30 UserCache): `local-index-v1/{sha256}.sqlite`. The engine hashes the key; the GUI must not. The user-cache **badge** stays `"user cache"`, not the filename.
+Key file name (engine 0.1.34 UserCache): `local-index-v1/{sha256}.sqlite`. The engine hashes the key; the GUI must not. The user-cache **badge** stays `"user cache"`, not the filename.
 
 Env override: `RATARMOUNT_LOCAL_INDEX_DIR`.  
 Size cap: `RATARMOUNT_LOCAL_INDEX_CACHE_BYTES` (default **2 GiB**). LRU by last-open time.
@@ -66,7 +66,7 @@ Create with mode 0700. Unlink on close and on next launch (sweep stale).
 
 ## Resolution order
 
-### Engine `resolve_index` (0.1.30; GUI consumes it, does not reimplement)
+### Engine `resolve_index` (0.1.34; GUI consumes it, does not reimplement)
 
 `Session::open` calls this internally. The GUI must not copy the table.
 
