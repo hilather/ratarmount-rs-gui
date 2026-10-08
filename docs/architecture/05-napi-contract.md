@@ -157,6 +157,7 @@ preview(opts: {
  * Dest-side probe. Does not write. Used for overwrite-ask UI and N/M confirm.
  * `files`/`bytes` come from SQLite aggregates (or the selected members), not a path dump.
  * Conflict dest-stats are **capped** (sample 50, scan ≤ 10_000 rows or 250 ms).
+ * Dest stat is no-follow: a dangling symlink at a member dest counts as a conflict.
  * v1 stays a synchronous command because of those caps — not a `{ jobId }`.
  * A full conflict-enumeration job is out of scope for v1.
  */

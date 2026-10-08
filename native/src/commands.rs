@@ -2,9 +2,10 @@
 use std::cell::RefCell;
 #[cfg(feature = "session")]
 use std::collections::{BTreeSet, VecDeque};
-use std::fs;
-use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::fs::{self, OpenOptions};
+use std::io::{self, Write};
+use std::path::{Component, Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -23,7 +24,7 @@ use crate::events::Event;
 use crate::parse::parse_native_overwrite;
 use crate::paths::{
     discard_secret, is_encrypted_source, is_fixture_source, member_dest_path,
-    normalize_archive_path, normalize_member_path,
+    normalize_archive_path, normalize_lex, normalize_member_path,
 };
 use crate::state::{
     JobKind, JobStatus, NativeApp, PendingExtract, PendingExtractItem, SessionBackend,
@@ -297,7 +298,12 @@ impl NativeApp {
                             }
                         }
                     }
-                    PendingExtract::Fake { overwrite, items }
+                    PendingExtract::Fake {
+                        overwrite,
+                        items,
+                        dest_root,
+                        allow_unsafe_paths: allow_dotdot,
+                    }
                 }
                 #[cfg(feature = "session")]
                 SessionBackend::Engine(engine) => PendingExtract::Engine {
@@ -325,7 +331,17 @@ impl NativeApp {
         }
         let pending = job.pending_extract.take()?;
         let payload = match pending {
-            PendingExtract::Fake { overwrite, items } => ExtractPayload::Fake { overwrite, items },
+            PendingExtract::Fake {
+                overwrite,
+                items,
+                dest_root,
+                allow_unsafe_paths,
+            } => ExtractPayload::Fake {
+                overwrite,
+                items,
+                dest_root,
+                allow_unsafe_paths,
+            },
             #[cfg(feature = "session")]
             PendingExtract::Engine {
                 session,
@@ -762,6 +778,8 @@ pub enum ExtractPayload {
     Fake {
         overwrite: Overwrite,
         items: Vec<PendingExtractItem>,
+        dest_root: PathBuf,
+        allow_unsafe_paths: bool,
     },
     #[cfg(feature = "session")]
     Engine {
@@ -880,24 +898,190 @@ fn preview_engine(
     )
 }
 
-pub fn write_extract_item(item: &PendingExtractItem, overwrite: Overwrite) -> Result<i64> {
-    if item.dest.exists() && overwrite == Overwrite::Skip {
-        return Ok(0);
+/// Fake-catalog extract. Order matches engine `extract_one_named`: refuse an
+/// intermediate dest symlink, create the parent, Skip on a no-follow stat,
+/// then write a sibling temp and rename it onto dest. The final component is
+/// never followed, including when `allow_unsafe_paths` is set.
+pub fn write_extract_item(
+    item: &PendingExtractItem,
+    overwrite: Overwrite,
+    dest_root: &Path,
+    allow_unsafe_paths: bool,
+) -> Result<i64> {
+    if !allow_unsafe_paths {
+        ensure_no_intermediate_symlink(dest_root, &item.dest, &item.member)?;
     }
     if let Some(parent) = item.dest.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| ApiError::not_writable(format!("create dest: {err}")))?;
     }
-    fs::write(&item.dest, &item.body)
-        .map_err(|err| ApiError::not_writable(format!("write dest: {err}")))?;
+    if overwrite == Overwrite::Skip {
+        match fs::symlink_metadata(&item.dest) {
+            Ok(_) => return Ok(0),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(map_dest_io_api(err, &item.dest)),
+        }
+    }
+    let (mut out, tmp) = create_extract_tmp(&item.dest)?;
+    // Close before rename. Windows cannot rename a file that is still open.
+    let write_res = out.write_all(&item.body).and_then(|_| out.flush());
+    drop(out);
+    if let Err(err) = write_res {
+        let _ = fs::remove_file(&tmp);
+        return Err(map_dest_io_api(err, &item.dest));
+    }
+    persist_extract_tmp(&tmp, &item.dest)?;
     Ok(item.body.len() as i64)
+}
+
+/// `symlink_metadata` succeeds for a dangling symlink. Stat errors stay
+/// "not present", matching the old `Path::exists` best-effort scan.
+fn dest_present_nofollow(path: &Path) -> bool {
+    fs::symlink_metadata(path).is_ok()
+}
+
+/// Engine `map_dest_io` composed with `map_engine_error`.
+fn map_dest_io_api(err: io::Error, dest: &Path) -> ApiError {
+    match err.kind() {
+        io::ErrorKind::PermissionDenied => ApiError::not_writable(dest.display().to_string()),
+        io::ErrorKind::NotFound => ApiError::not_found("not found"),
+        _ => ApiError::internal(err.to_string()),
+    }
+}
+
+/// Engine `ensure_no_intermediate_symlink`. `item.dest` is already
+/// `normalize_lex`'d by `member_dest_path`, so the prefix is the normalized root.
+fn ensure_no_intermediate_symlink(dest_root: &Path, dest: &Path, member: &str) -> Result<()> {
+    let root = normalize_lex(dest_root);
+    let rel = dest
+        .strip_prefix(&root)
+        .map_err(|_| ApiError::path_escape(member))?;
+    let mut cur = root;
+    let comps: Vec<Component> = rel.components().collect();
+    for (i, component) in comps.iter().enumerate() {
+        let Component::Normal(name) = *component else {
+            return Err(ApiError::path_escape(member));
+        };
+        cur.push(name);
+        if i + 1 == comps.len() {
+            break;
+        }
+        match fs::symlink_metadata(&cur) {
+            Ok(meta) if meta.file_type().is_symlink() => {
+                return Err(ApiError::path_escape(member));
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+            Err(err) => return Err(map_dest_io_api(err, &cur)),
+        }
+    }
+    Ok(())
+}
+
+fn create_extract_tmp(dest: &Path) -> Result<(fs::File, PathBuf)> {
+    static SEQ: AtomicU64 = AtomicU64::new(1);
+    let parent = dest
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let stem = dest
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_else(|| "extract".into());
+    for _ in 0..32 {
+        let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+        let tmp = parent.join(format!(".{stem}.extract-{seq}.tmp"));
+        match OpenOptions::new().write(true).create_new(true).open(&tmp) {
+            Ok(file) => return Ok((file, tmp)),
+            Err(err) if err.kind() == io::ErrorKind::AlreadyExists => continue,
+            Err(err) => return Err(map_dest_io_api(err, dest)),
+        }
+    }
+    Err(ApiError::internal(format!(
+        "could not allocate extract temp next to {}",
+        dest.display()
+    )))
+}
+
+fn persist_extract_tmp(tmp: &Path, dest: &Path) -> Result<()> {
+    match fs::rename(tmp, dest) {
+        Ok(()) => Ok(()),
+        Err(err) => persist_extract_tmp_fallback(tmp, dest, err),
+    }
+}
+
+fn persist_extract_tmp_fallback(tmp: &Path, dest: &Path, rename_err: io::Error) -> Result<()> {
+    match dest_is_dir_nofollow(dest) {
+        Ok(true) => {
+            let _ = fs::remove_file(tmp);
+            Err(ApiError::internal(format!(
+                "refusing to replace directory {}",
+                dest.display()
+            )))
+        }
+        Ok(false) => persist_rename_fallback(tmp, dest, rename_err),
+        Err(stat) => {
+            let _ = fs::remove_file(tmp);
+            Err(stat)
+        }
+    }
+}
+
+fn dest_is_dir_nofollow(path: &Path) -> Result<bool> {
+    match fs::symlink_metadata(path) {
+        Ok(meta) => Ok(meta.file_type().is_dir()),
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(err) => Err(map_dest_io_api(err, path)),
+    }
+}
+
+/// Unix `rename` replaces a file or symlink and must not unlink dest on
+/// failure. Windows cannot replace an existing dest, so remove it no-follow
+/// and rename again, keeping the temp if the second rename fails.
+fn persist_rename_fallback(tmp: &Path, dest: &Path, rename_err: io::Error) -> Result<()> {
+    #[cfg(windows)]
+    {
+        match fs::symlink_metadata(dest) {
+            Ok(_) => {
+                if let Err(rm) = fs::remove_file(dest) {
+                    let _ = fs::remove_file(tmp);
+                    return Err(map_dest_io_api(rm, dest));
+                }
+                if let Err(rn) = fs::rename(tmp, dest) {
+                    return Err(map_dest_io_api(rn, dest));
+                }
+                Ok(())
+            }
+            Err(_) => {
+                let _ = fs::remove_file(tmp);
+                Err(map_dest_io_api(rename_err, dest))
+            }
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = fs::remove_file(tmp);
+        Err(map_dest_io_api(rename_err, dest))
+    }
 }
 
 /// Dest writes happen between `on_step` calls so the caller can drop a mutex.
 pub fn drive_extract_work(work: ExtractWork, on_step: impl FnMut(ExtractStep)) {
     match work.payload {
-        ExtractPayload::Fake { overwrite, items } => {
-            drive_fake_extract(items, overwrite, &work.cancel, on_step);
+        ExtractPayload::Fake {
+            overwrite,
+            items,
+            dest_root,
+            allow_unsafe_paths,
+        } => {
+            drive_fake_extract(
+                items,
+                overwrite,
+                &dest_root,
+                allow_unsafe_paths,
+                &work.cancel,
+                on_step,
+            );
         }
         #[cfg(feature = "session")]
         ExtractPayload::Engine {
@@ -921,6 +1105,8 @@ pub fn drive_extract_work(work: ExtractWork, on_step: impl FnMut(ExtractStep)) {
 fn drive_fake_extract(
     items: Vec<PendingExtractItem>,
     overwrite: Overwrite,
+    dest_root: &Path,
+    allow_unsafe_paths: bool,
     cancel: &AtomicBool,
     mut on_step: impl FnMut(ExtractStep),
 ) {
@@ -933,7 +1119,7 @@ fn drive_fake_extract(
             return;
         }
         let current = item.member.clone();
-        match write_extract_item(&item, overwrite) {
+        match write_extract_item(&item, overwrite, dest_root, allow_unsafe_paths) {
             Ok(n) => {
                 files_done += 1;
                 bytes_out += n;
@@ -1140,7 +1326,7 @@ fn engine_extract_plan(
         files += 1;
         bytes += size;
         if let Some(dest) = plan_member_dest(dest_root, &path, allow_unsafe_paths) {
-            if dest.exists() {
+            if dest_present_nofollow(&dest) {
                 conflict_count += 1;
                 if conflicts.len() < EXTRACT_PLAN_CONFLICT_SAMPLE {
                     conflicts.push(ExtractConflict {
@@ -1192,7 +1378,7 @@ fn engine_extract_plan(
                 files += 1;
                 bytes += crate::session::saturate_i64(ent.size);
                 if let Some(dest) = plan_member_dest(dest_root, &ent.path, allow_unsafe_paths) {
-                    if dest.exists() {
+                    if dest_present_nofollow(&dest) {
                         conflict_count += 1;
                         if conflicts.len() < EXTRACT_PLAN_CONFLICT_SAMPLE {
                             conflicts.push(ExtractConflict {
@@ -1251,7 +1437,7 @@ fn plan_dest_conflicts(
         let Ok(dest) = member_dest_path(dest_root, &file.path) else {
             continue;
         };
-        if dest.exists() {
+        if dest_present_nofollow(&dest) {
             conflict_count += 1;
             if conflicts.len() < EXTRACT_PLAN_CONFLICT_SAMPLE {
                 conflicts.push(ExtractConflict {
