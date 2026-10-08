@@ -65,6 +65,8 @@ pub enum PendingExtract {
     Fake {
         overwrite: Overwrite,
         items: Vec<PendingExtractItem>,
+        dest_root: PathBuf,
+        allow_unsafe_paths: bool,
     },
     #[cfg(feature = "session")]
     Engine {
@@ -79,10 +81,17 @@ pub enum PendingExtract {
 impl fmt::Debug for PendingExtract {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Fake { overwrite, items } => f
+            Self::Fake {
+                overwrite,
+                items,
+                dest_root,
+                allow_unsafe_paths,
+            } => f
                 .debug_struct("Fake")
                 .field("overwrite", overwrite)
                 .field("items", items)
+                .field("dest_root", dest_root)
+                .field("allow_unsafe_paths", allow_unsafe_paths)
                 .finish(),
             #[cfg(feature = "session")]
             Self::Engine {

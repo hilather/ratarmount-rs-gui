@@ -75,6 +75,8 @@ When you fix a **new** production bug, **add a row** here and ship the test in t
 | X11 drop fires after pointer left our window | `cargo test -p native x11_drop_emits_only_when_pointer_still_over_us` |
 | Cancel of deferred cold open left password in `JobState.pending_open` | `cargo test -p native regression_cancel_before_index_worker_discards_pending_open_password` |
 | Engine extract Replace wrote through a pre-existing dest symlink (session <= 0.1.30) | `cargo test -p native regression_extract_replace_unlinks_dest_symlink_not_write_through` |
+| Extract preview missed dangling dest symlinks | `cargo test -p native regression_extract_plan_counts_dangling_dest_symlink` |
+| Fake extract wrote through dest / intermediate symlinks | `cargo test -p native regression_fake_extract` |
 
 ## CI is mandatory
 

@@ -389,11 +389,17 @@ fn cancel_during_dest_write_stops_further_writes() {
         })
         .unwrap();
     let work = app.take_extract_work(job_id).expect("pending dest work");
-    let ExtractPayload::Fake { items, overwrite } = &work.payload else {
+    let ExtractPayload::Fake {
+        items,
+        overwrite,
+        dest_root,
+        allow_unsafe_paths,
+    } = &work.payload
+    else {
         panic!("expected fake extract payload");
     };
     assert!(items.len() > 2);
-    write_extract_item(&items[0], *overwrite).unwrap();
+    write_extract_item(&items[0], *overwrite, dest_root, *allow_unsafe_paths).unwrap();
     app.cancel(job_id).unwrap();
     assert!(app.job_cancel_requested(job_id));
     let mut extra = 0_usize;
@@ -929,5 +935,325 @@ fn cancel_during_engine_dir_expand_writes_nothing() {
     assert!(
         dest.read_dir().unwrap().next().is_none(),
         "cancel during expansion must not write"
+    );
+}
+
+fn assert_job_failed(events: &[Event], job_id: u32, code: &str, retryable: bool) {
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::JobFailed {
+                    job_id: id,
+                    code: got,
+                    retryable: got_retry,
+                    ..
+                } if *id == job_id && got == code && *got_retry == retryable
+            )
+        }),
+        "expected JobFailed code={code} retryable={retryable}, got {events:?}"
+    );
+}
+
+fn assert_job_succeeded(events: &[Event], job_id: u32) {
+    assert!(
+        events.iter().any(|event| {
+            matches!(event, Event::JobSucceeded { job_id: id, .. } if *id == job_id)
+        }),
+        "expected JobSucceeded for {job_id}, got {events:?}"
+    );
+}
+
+#[cfg(unix)]
+fn symlink_to(target: &Path, link: &Path) {
+    if let Some(parent) = link.parent() {
+        fs::create_dir_all(parent).unwrap();
+    }
+    std::os::unix::fs::symlink(target, link).unwrap();
+}
+
+#[cfg(unix)]
+fn set_allow_unsafe(app: &mut NativeApp, allow: bool) {
+    app.set_config(ConfigPatch {
+        extract: Some(ExtractConfigPatch {
+            allow_unsafe_paths: Some(allow),
+            overwrite: None,
+        }),
+        ..ConfigPatch::default()
+    })
+    .unwrap();
+}
+
+/// Regression: extract preview used `Path::exists` (follows symlinks), so a
+/// dangling dest symlink was missing from `conflict_count`.
+#[cfg(unix)]
+#[test]
+fn regression_extract_plan_counts_dangling_dest_symlink() {
+    let tmp = TempTree::new("plan-dangling");
+    let dest = tmp.path().join("out");
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("a.txt");
+    assert!(!target.exists(), "dangling target must not exist");
+    symlink_to(&target, &dest.join("dir-00").join("a.txt"));
+
+    let mut app = NativeApp::for_test();
+    let session_id = app.open_catalog("fixture.tar", FakeCatalog::new());
+    let plan = app
+        .extract_plan(ExtractPlanOpts {
+            session_id,
+            members: vec!["/dir-00/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+    assert_eq!(plan.conflict_count, 1);
+    assert_eq!(plan.conflicts.len(), 1);
+    assert_eq!(plan.conflicts[0].member, "/dir-00/a.txt");
+}
+
+#[cfg(unix)]
+fn assert_engine_plan_counts_dangling(members: Vec<String>) {
+    let tmp = TempTree::new("plan-dangling-engine");
+    let tar = tmp.path().join("one.tar");
+    write_ustar(&tar, &[("a.txt", b"hello\n".as_slice())]).unwrap();
+    let dest = tmp.path().join("out");
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let target = outside.join("a.txt");
+    assert!(!target.exists(), "dangling target must not exist");
+    symlink_to(&target, &dest.join("a.txt"));
+
+    let mut app = NativeApp::production();
+    let Some(session_id) = production_open(&mut app, &tar) else {
+        return;
+    };
+    let plan = app
+        .extract_plan(ExtractPlanOpts {
+            session_id,
+            members,
+            dest_dir: dest.to_string_lossy().into_owned(),
+        })
+        .unwrap();
+    assert_eq!(plan.conflict_count, 1);
+    assert_eq!(plan.conflicts.len(), 1);
+    assert_eq!(plan.conflicts[0].member, "/a.txt");
+}
+
+/// Regression: engine extractPlan on an explicit member used `Path::exists`,
+/// so a dangling dest symlink was not a conflict.
+#[cfg(unix)]
+#[test]
+fn regression_extract_plan_counts_dangling_dest_symlink_engine_explicit() {
+    assert_engine_plan_counts_dangling(vec!["/a.txt".into()]);
+}
+
+/// Regression: engine extractPlan's directory walk used `Path::exists`, so a
+/// dangling dest symlink was not a conflict.
+#[cfg(unix)]
+#[test]
+fn regression_extract_plan_counts_dangling_dest_symlink_engine_walk() {
+    assert_engine_plan_counts_dangling(vec![]);
+}
+
+#[cfg(unix)]
+fn assert_replace_over_final_symlink(allow_unsafe: bool) {
+    let tmp = TempTree::new(if allow_unsafe {
+        "replace-link-unsafe"
+    } else {
+        "replace-link"
+    });
+    let victim = tmp.path().join("victim.txt");
+    fs::write(&victim, b"original\n").unwrap();
+    let dest = tmp.path().join("out");
+    symlink_to(&victim, &dest.join("dir-00").join("a.txt"));
+
+    let mut app = NativeApp::for_test();
+    set_allow_unsafe(&mut app, allow_unsafe);
+    let session_id = app.open_catalog("fixture.tar", FakeCatalog::new());
+    let job_id = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/dir-00/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("extract");
+    let events = app.take_events();
+    assert_job_succeeded(&events, job_id);
+    assert_eq!(
+        fs::read(&victim).unwrap(),
+        b"original\n",
+        "Replace must not write through a final dest symlink (allow_unsafe={allow_unsafe})"
+    );
+    let meta = fs::symlink_metadata(dest.join("dir-00").join("a.txt")).unwrap();
+    assert!(
+        meta.file_type().is_file(),
+        "dest must be a regular file, not the old symlink"
+    );
+    assert_eq!(
+        fs::read(dest.join("dir-00").join("a.txt")).unwrap(),
+        b"hi!\n"
+    );
+}
+
+/// Regression: fake Replace followed a final dest symlink and wrote the member
+/// into the target outside dest. Both `allow_unsafe_paths` values must replace
+/// the link itself.
+#[cfg(unix)]
+#[test]
+fn regression_fake_extract_replace_does_not_write_through_dest_symlink() {
+    assert_replace_over_final_symlink(false);
+    assert_replace_over_final_symlink(true);
+}
+
+/// Regression: fake Skip followed a dangling dest symlink and created the
+/// target file. The link must stay and the target must not appear.
+#[cfg(unix)]
+#[test]
+fn regression_fake_extract_skip_does_not_follow_dangling_dest_symlink() {
+    let tmp = TempTree::new("skip-dangling");
+    let victim = tmp.path().join("victim.txt");
+    let dest = tmp.path().join("out");
+    symlink_to(&victim, &dest.join("dir-00").join("a.txt"));
+    assert!(!victim.exists());
+
+    let mut app = NativeApp::for_test();
+    let session_id = app.open_catalog("fixture.tar", FakeCatalog::new());
+    let job_id = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/dir-00/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "skip".into(),
+        })
+        .expect("extract");
+    let events = app.take_events();
+    assert_job_succeeded(&events, job_id);
+    assert!(
+        !victim.exists(),
+        "Skip must not create the dangling symlink target"
+    );
+    assert!(
+        fs::symlink_metadata(dest.join("dir-00").join("a.txt"))
+            .unwrap()
+            .file_type()
+            .is_symlink(),
+        "dangling dest symlink must stay"
+    );
+}
+
+/// Regression: fake Replace followed an intermediate dest-dir symlink when
+/// `allow_unsafe_paths` was off, wrote the member outside dest, and continued
+/// the job. The job must fail PathEscape before later members are written.
+#[cfg(unix)]
+#[test]
+fn regression_fake_extract_refuses_intermediate_dest_symlink() {
+    let tmp = TempTree::new("intermediate-link");
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    let victim = outside.join("a.txt");
+    fs::write(&victim, b"victim-bytes\n").unwrap();
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    std::os::unix::fs::symlink(&outside, dest.join("dir-00")).unwrap();
+
+    let mut app = NativeApp::for_test();
+    assert!(!app.get_config().extract.allow_unsafe_paths);
+    let session_id = app.open_catalog("fixture.tar", FakeCatalog::new());
+    let job_id = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/dir-00/a.txt".into(), "/file-000".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("extract returns a job id");
+    let events = app.take_events();
+    assert_job_failed(&events, job_id, "PathEscape", false);
+    assert_eq!(fs::read(&victim).unwrap(), b"victim-bytes\n");
+    assert!(
+        !dest.join("file-000").exists(),
+        "later members must not be written after PathEscape"
+    );
+}
+
+/// Regression: with `extract.allow_unsafe_paths` set, Replace follows an
+/// intermediate dest symlink and writes the member at the target. Documented
+/// unsafe opt-in, same as the engine. Characterization: this passed before the
+/// no-follow fix and must keep passing.
+#[cfg(unix)]
+#[test]
+fn regression_fake_extract_allow_unsafe_follows_intermediate_symlink() {
+    let tmp = TempTree::new("intermediate-unsafe");
+    let outside = tmp.path().join("outside");
+    fs::create_dir_all(&outside).unwrap();
+    assert!(!outside.join("a.txt").exists());
+    let dest = tmp.path().join("out");
+    fs::create_dir_all(&dest).unwrap();
+    std::os::unix::fs::symlink(&outside, dest.join("dir-00")).unwrap();
+
+    let mut app = NativeApp::for_test();
+    set_allow_unsafe(&mut app, true);
+    let session_id = app.open_catalog("fixture.tar", FakeCatalog::new());
+    let job_id = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/dir-00/a.txt".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("extract");
+    let events = app.take_events();
+    assert_job_succeeded(&events, job_id);
+    assert_eq!(fs::read(outside.join("a.txt")).unwrap(), b"hi!\n");
+}
+
+/// Regression: fake Replace used `fs::write` on a real directory at the member
+/// dest. The job must fail with non-retryable Internal, leave children in
+/// place, and not leak a sibling extract temp.
+#[test]
+fn regression_fake_extract_replace_refuses_real_directory() {
+    let tmp = TempTree::new("replace-dir");
+    let dest = tmp.path().join("out");
+    let as_dir = dest.join("file-000");
+    fs::create_dir_all(&as_dir).unwrap();
+    fs::write(as_dir.join("keep.txt"), b"keep").unwrap();
+
+    let mut app = NativeApp::for_test();
+    let session_id = app.open_catalog("fixture.tar", FakeCatalog::new());
+    let job_id = app
+        .extract(ExtractOpts {
+            session_id,
+            members: vec!["/file-000".into()],
+            dest_dir: dest.to_string_lossy().into_owned(),
+            overwrite: "replace".into(),
+        })
+        .expect("extract returns a job id");
+    let events = app.take_events();
+    assert_job_failed(&events, job_id, "Internal", false);
+    assert!(
+        events.iter().any(|event| {
+            matches!(
+                event,
+                Event::JobFailed { job_id: id, message, .. }
+                    if *id == job_id && message.contains("refusing to replace directory")
+            )
+        }),
+        "expected refusing-to-replace-directory, got {events:?}"
+    );
+    assert_eq!(fs::read(as_dir.join("keep.txt")).unwrap(), b"keep");
+    assert!(fs::symlink_metadata(&as_dir).unwrap().is_dir());
+    let leftovers: Vec<_> = fs::read_dir(&dest)
+        .unwrap()
+        .filter_map(|ent| ent.ok())
+        .map(|ent| ent.file_name())
+        .filter(|name| {
+            let text = name.to_string_lossy();
+            text.contains(".extract-") && text.ends_with(".tmp")
+        })
+        .collect();
+    assert!(
+        leftovers.is_empty(),
+        "refuse-directory must unlink the temp, leftover {leftovers:?}"
     );
 }

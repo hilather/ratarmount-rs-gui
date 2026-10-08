@@ -107,7 +107,7 @@ pub fn member_dest_path(dest_dir: &Path, member: &str) -> Result<PathBuf> {
     Ok(dest)
 }
 
-fn normalize_lex(path: &Path) -> PathBuf {
+pub(crate) fn normalize_lex(path: &Path) -> PathBuf {
     let mut out = PathBuf::new();
     for c in path.components() {
         match c {
