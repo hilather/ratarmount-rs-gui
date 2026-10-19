@@ -1324,8 +1324,8 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-compositing"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "bzip2",
  "flate2",
@@ -1337,6 +1337,7 @@ dependencies = [
  "ratarmount-index",
  "regex",
  "rusqlite",
+ "serde_json",
  "tempfile",
  "thiserror",
  "xz2",
@@ -1345,11 +1346,13 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-compress"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "bzip2",
+ "crc32fast",
  "flate2",
+ "libc",
  "libloading 0.8.9",
  "log",
  "lz4_flex",
@@ -1357,6 +1360,7 @@ dependencies = [
  "miniz_oxide 0.8.9",
  "newtua-lzw-z",
  "ratarmount-core",
+ "sha2",
  "tempfile",
  "thiserror",
  "xz2",
@@ -1366,8 +1370,8 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-core"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "libc",
  "thiserror",
@@ -1375,8 +1379,8 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-formats-restic"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "aes",
  "base64",
@@ -1395,8 +1399,8 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-formats-sevenzip"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "aes",
  "bzip2",
@@ -1416,8 +1420,8 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-formats-tar"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "encoding_rs",
  "libc",
@@ -1431,8 +1435,8 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-formats-zip"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "flate2",
  "libc",
@@ -1447,12 +1451,13 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-index"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "bzip2",
  "crc32fast",
  "flate2",
+ "libc",
  "log",
  "md-5",
  "ratarmount-core",
@@ -1470,17 +1475,21 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-remote"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
+ "base64",
  "chrono",
  "hex",
  "hmac",
  "jsonwebtoken",
+ "libc",
  "log",
  "md-5",
  "md4",
  "ratarmount-core",
+ "ratarmount-index",
+ "secrecy",
  "serde_json",
  "sha1",
  "sha2",
@@ -1494,8 +1503,8 @@ dependencies = [
 
 [[package]]
 name = "ratarmount-session"
-version = "0.1.34"
-source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.34#acec114989f472b81e8b335fd384940f23bcf01c"
+version = "0.1.35"
+source = "git+https://github.com/hilather/ratarmount-rs?tag=v0.1.35#cc55c8c94c69aa40104408c6783b08a4acd9c052"
 dependencies = [
  "log",
  "ratarmount-compositing",

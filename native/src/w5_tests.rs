@@ -384,6 +384,7 @@ fn map_engine_error_file_as_parent_may_be_sibling_not_writable() {
         password: None,
         recursive: false,
         recursion_depth: None,
+        parallelization: Default::default(),
         recreate: ratarmount_session::Recreate::IfInvalid,
     }) {
         Ok(_) => panic!("file-as-parent should not open"),
