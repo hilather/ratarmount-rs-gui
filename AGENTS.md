@@ -46,7 +46,7 @@ Root `README.md` is a high-level landing page. It must **not** contain wave boar
 
 The **native crate** owns path validation, the preview cap, and the handle table. React must not see archive bytes. Preview hard ceiling is **64 MiB in native** even if the user types a larger number.
 
-The engine crate **`ratarmount-session` 0.1.34** is pinned and default-on. Canonical engine API: `ratarmount-rs/docs/session-api.md` / `docs/tasks/gui-embedder-support.md`. The snapshot in [docs/engine/gui-embedder-support.md](docs/engine/gui-embedder-support.md) is historical. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`.
+The engine crate **`ratarmount-session` 0.1.35** is pinned and default-on. Canonical engine API: `ratarmount-rs/docs/session-api.md` / `docs/tasks/gui-embedder-support.md`. The snapshot in [docs/engine/gui-embedder-support.md](docs/engine/gui-embedder-support.md) is historical. Fake catalog remains `RGUI_FAKE=1` / `NativeApp::for_test()`.
 
 ## Tests for every fix (non-negotiable)
 

@@ -971,6 +971,8 @@ fn map_open_request(req: &OpenRequest) -> Result<ratarmount_session::OpenRequest
         password: req.password.clone().map(secrecy::SecretString::new),
         recursive: req.recursive,
         recursion_depth,
+        // One codec thread. ParallelizationSpec::default() is the pre-field engine behavior.
+        parallelization: Default::default(),
         recreate: map_recreate(req.recreate),
     })
 }
